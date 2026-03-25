@@ -1,0 +1,24 @@
+[package]
+name = "skesis"
+version = "0.1.0"
+edition = "2024"
+description = "A high-performance Entity Component System with anchor+delta change detection, relationships, and raw byte serialization"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mclark/skesis"
+keywords = ["ecs", "gamedev", "entity-component-system", "change-detection"]
+categories = ["game-development", "data-structures"]
+readme = "README.md"
+
+[features]
+default = []
+unsafe_fastpath = []
+
+[dependencies]
+rayon = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "micro"
+harness = false
