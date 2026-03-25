@@ -8,10 +8,29 @@
 
 use crate::Entity;
 use std::any::Any;
+use std::num::NonZeroU32;
+
+/// Compact index into the dense array, using NonZeroU32 for niche optimization.
+///
+/// `Option<SparseIndex>` is 4 bytes (same as u32) thanks to the niche in NonZeroU32.
+/// Dense index 0 is stored as NonZeroU32(1), index 1 as NonZeroU32(2), etc.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct SparseIndex(NonZeroU32);
+
+impl SparseIndex {
+    fn new(idx: usize) -> Self {
+        Self(NonZeroU32::new((idx as u32) + 1).expect("dense index overflow"))
+    }
+
+    fn get(self) -> usize {
+        (self.0.get() - 1) as usize
+    }
+}
 
 /// Sparse set for storing components.
 pub struct SparseSet<T> {
-    sparse: Vec<Option<usize>>,
+    sparse: Vec<Option<SparseIndex>>,
     dense: Vec<Entity>,
     components: Vec<T>,
 }
@@ -34,11 +53,11 @@ impl<T> SparseSet<T> {
             self.sparse.resize(index + 1, None);
         }
 
-        if let Some(dense_index) = self.sparse[index] {
-            self.components[dense_index] = component;
+        if let Some(si) = self.sparse[index] {
+            self.components[si.get()] = component;
         } else {
             let dense_index = self.dense.len();
-            self.sparse[index] = Some(dense_index);
+            self.sparse[index] = Some(SparseIndex::new(dense_index));
             self.dense.push(entity);
             self.components.push(component);
         }
@@ -53,7 +72,7 @@ impl<T> SparseSet<T> {
     /// Get a reference to a component.
     pub fn get(&self, entity: Entity) -> Option<&T> {
         let index = entity.index() as usize;
-        let dense_index = *self.sparse.get(index)?.as_ref()?;
+        let dense_index = self.sparse.get(index)?.map(|si| si.get())?;
         self.components.get(dense_index)
     }
 
@@ -65,7 +84,7 @@ impl<T> SparseSet<T> {
             return None;
         }
 
-        let dense_index = self.sparse[index]?;
+        let dense_index = self.sparse[index]?.get();
 
         let last_dense_index = self.dense.len() - 1;
         let last_entity = self.dense[last_dense_index];
@@ -74,7 +93,7 @@ impl<T> SparseSet<T> {
         let component = self.components.swap_remove(dense_index);
 
         if dense_index < self.dense.len() {
-            self.sparse[last_entity.index() as usize] = Some(dense_index);
+            self.sparse[last_entity.index() as usize] = Some(SparseIndex::new(dense_index));
         }
 
         self.sparse[index] = None;
@@ -85,7 +104,7 @@ impl<T> SparseSet<T> {
     /// Get a mutable reference to a component.
     pub fn get_mut(&mut self, entity: Entity) -> Option<&mut T> {
         let index = entity.index() as usize;
-        let dense_index = *self.sparse.get(index)?.as_ref()?;
+        let dense_index = self.sparse.get(index)?.map(|si| si.get())?;
         self.components.get_mut(dense_index)
     }
 
@@ -222,5 +241,37 @@ mod tests {
 
         let collected: Vec<_> = set.iter().collect();
         assert_eq!(collected.len(), 2);
+    }
+
+    #[test]
+    fn sparse_index_is_4_bytes() {
+        assert_eq!(std::mem::size_of::<Option<SparseIndex>>(), 4);
+    }
+
+    #[test]
+    fn high_entity_index_works() {
+        let mut set = SparseSet::new();
+        let entity = Entity::new(u32::MAX - 1, 0);
+
+        set.insert(entity, Health(42));
+        assert_eq!(set.get(entity), Some(&Health(42)));
+        assert!(set.contains(entity));
+
+        let removed = set.remove(entity);
+        assert_eq!(removed, Some(Health(42)));
+        assert!(!set.contains(entity));
+    }
+
+    #[test]
+    fn sparse_array_memory_is_compact() {
+        let mut set = SparseSet::<Health>::new();
+        let entity = Entity::new(999, 0);
+        set.insert(entity, Health(1));
+
+        // Sparse array should be 1000 slots * 4 bytes = 4000 bytes,
+        // NOT 1000 * 16 bytes (old Option<usize>).
+        let slot_size = std::mem::size_of::<Option<SparseIndex>>();
+        assert_eq!(slot_size, 4);
+        assert_eq!(set.sparse.len(), 1000);
     }
 }
