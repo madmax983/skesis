@@ -4,6 +4,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 
 /// A contiguous run of changed bytes at a given offset.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ByteRun {
     pub offset: usize,
@@ -11,6 +12,7 @@ pub(crate) struct ByteRun {
 }
 
 /// Compare two equal-length byte slices, returning runs of differing bytes.
+#[cfg(test)]
 pub(crate) fn diff_bytes(before: &[u8], after: &[u8]) -> Vec<ByteRun> {
     debug_assert_eq!(before.len(), after.len());
     let mut runs = Vec::new();
@@ -38,7 +40,28 @@ pub(crate) fn diff_bytes(before: &[u8], after: &[u8]) -> Vec<ByteRun> {
 /// Return true if any byte differs between two equal-length slices.
 pub(crate) fn any_bytes_differ(before: &[u8], after: &[u8]) -> bool {
     debug_assert_eq!(before.len(), after.len());
-    before.iter().zip(after.iter()).any(|(a, b)| a != b)
+    let len = before.len();
+
+    // Use unaligned u64 reads for the bulk comparison.
+    let word_count = len / 8;
+    if word_count > 0 {
+        let before_ptr = before.as_ptr();
+        let after_ptr = after.as_ptr();
+        for i in 0..word_count {
+            let offset = i * 8;
+            // SAFETY: offset + 8 <= word_count * 8 <= len, so reads are in bounds.
+            // read_unaligned handles any alignment.
+            let bw = unsafe { before_ptr.add(offset).cast::<u64>().read_unaligned() };
+            let aw = unsafe { after_ptr.add(offset).cast::<u64>().read_unaligned() };
+            if bw != aw {
+                return true;
+            }
+        }
+    }
+
+    // Byte-level tail comparison.
+    let tail_start = word_count * 8;
+    before[tail_start..].iter().zip(after[tail_start..].iter()).any(|(a, b)| a != b)
 }
 
 /// Build a bitset (one bit per element of size `stride`) marking which elements differ.
@@ -111,8 +134,8 @@ unsafe fn diff_to_bitset_avx2_stride8(
     bits: &mut [u64],
 ) {
     use std::arch::x86_64::{
-        __m256i, _mm256_cmpeq_epi64, _mm256_loadu_si256, _mm256_movemask_pd, _mm256_setzero_si256,
-        _mm256_xor_si256,
+        __m256i, _mm256_castsi256_pd, _mm256_cmpeq_epi64, _mm256_loadu_si256,
+        _mm256_movemask_pd, _mm256_setzero_si256, _mm256_xor_si256,
     };
 
     let zero = _mm256_setzero_si256();
@@ -131,7 +154,7 @@ unsafe fn diff_to_bitset_avx2_stride8(
         let eq = _mm256_cmpeq_epi64(xor, zero);
         // Extract MSB of each 64-bit lane as a 4-bit mask.
         // Bit is 1 if lane was all-ones (equal/unchanged), 0 if different.
-        let mask = _mm256_movemask_pd(std::mem::transmute(eq)) as u32;
+        let mask = _mm256_movemask_pd(_mm256_castsi256_pd(eq)) as u32;
         // Invert: we want bits set where elements CHANGED (were not equal).
         let changed_mask = (!mask) & 0xF;
 
@@ -163,6 +186,7 @@ unsafe fn diff_to_bitset_avx2_stride8(
 }
 
 /// Tracks changes to a component column using anchor+delta snapshots.
+#[derive(Default)]
 pub(crate) struct ChangeTracker {
     /// Bumped whenever the column may have been mutated.
     pub column_version: u64,
@@ -172,10 +196,7 @@ pub(crate) struct ChangeTracker {
 
 impl ChangeTracker {
     pub(crate) fn new() -> Self {
-        Self {
-            column_version: 0,
-            snapshots: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub(crate) fn bump_version(&mut self) {
@@ -232,9 +253,11 @@ impl ChangeTracker {
                 current_bytes.len() / element_stride
             };
             let word_count = (element_count + 63) / 64;
-            let mut bits = vec![0u64; word_count];
-            for i in 0..element_count {
-                bits[i / 64] |= 1u64 << (i % 64);
+            let mut bits = vec![u64::MAX; word_count];
+            // Mask the final word so only valid element bits are set.
+            let remainder = element_count % 64;
+            if remainder != 0 && word_count > 0 {
+                bits[word_count - 1] = (1u64 << remainder) - 1;
             }
             return Some(bits);
         }

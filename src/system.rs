@@ -75,28 +75,25 @@ pub struct SystemDescriptor {
 }
 
 impl SystemDescriptor {
-    /// Create a system descriptor with empty access metadata.
-    pub fn new(system: SystemFn, registration_index: usize) -> Self {
+    fn create(system: SystemKind, registration_index: usize, access_declared: bool) -> Self {
         Self {
-            system: SystemKind::Exclusive(system),
+            system,
             access: SystemAccess::default(),
-            access_declared: false,
+            access_declared,
             registration_index,
             before_constraints: Vec::new(),
             after_constraints: Vec::new(),
         }
     }
 
+    /// Create a system descriptor with empty access metadata.
+    pub fn new(system: SystemFn, registration_index: usize) -> Self {
+        Self::create(SystemKind::Exclusive(system), registration_index, false)
+    }
+
     /// Create a parallel system descriptor with empty access metadata.
     pub fn new_parallel(system: ParallelSystemFn, registration_index: usize) -> Self {
-        Self {
-            system: SystemKind::Parallel(system),
-            access: SystemAccess::default(),
-            access_declared: false,
-            registration_index,
-            before_constraints: Vec::new(),
-            after_constraints: Vec::new(),
-        }
+        Self::create(SystemKind::Parallel(system), registration_index, false)
     }
 
     /// Create a parallel system descriptor with explicitly declared access metadata.
@@ -104,14 +101,7 @@ impl SystemDescriptor {
         system: ParallelSystemFn,
         registration_index: usize,
     ) -> Self {
-        Self {
-            system: SystemKind::Parallel(system),
-            access: SystemAccess::default(),
-            access_declared: true,
-            registration_index,
-            before_constraints: Vec::new(),
-            after_constraints: Vec::new(),
-        }
+        Self::create(SystemKind::Parallel(system), registration_index, true)
     }
 
     /// Get the system function.

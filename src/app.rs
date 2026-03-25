@@ -136,24 +136,26 @@ impl App {
 
     /// Run all systems in a stage.
     fn run_stage(&mut self, stage: Stage) {
-        let stage_descriptors = match self.systems.get(&stage) {
-            Some(systems) if !systems.is_empty() => systems.clone(),
-            _ => return,
+        // Temporarily take systems out to split the borrow between descriptors and world.
+        let Some(mut stage_descriptors) = self.systems.remove(&stage) else {
+            return;
         };
+        if stage_descriptors.is_empty() {
+            self.systems.insert(stage, stage_descriptors);
+            return;
+        }
 
-        let stage_plan = if let Some(cached_plan) = self.stage_plans.get(&stage) {
-            cached_plan.clone()
+        let stage_plan = if let Some(cached_plan) = self.stage_plans.remove(&stage) {
+            cached_plan
         } else {
-            let computed_plan = plan_stage(&stage_descriptors);
-            self.stage_plans.insert(stage, computed_plan.clone());
-            computed_plan
+            plan_stage(&stage_descriptors)
         };
 
         self.world.begin_stage_events();
         self.world.begin_stage_commands();
 
-        for batch in stage_plan {
-            if can_run_parallel_batch(&batch, &stage_descriptors) {
+        for batch in &stage_plan {
+            if can_run_parallel_batch(batch, &stage_descriptors) {
                 let mut recorded: Vec<(usize, CommandRecorder)> = {
                     let world_ref: &World = &self.world;
                     batch
@@ -174,7 +176,7 @@ impl App {
                     self.world.append_recorded_commands(recorder);
                 }
             } else {
-                for index in batch {
+                for &index in batch {
                     let descriptor = &stage_descriptors[index];
                     if let Some(system) = descriptor.exclusive_system() {
                         self.world.begin_system_events();
@@ -194,6 +196,10 @@ impl App {
 
         self.world.end_stage_commands();
         self.world.end_stage_events();
+
+        // Restore systems and cache the plan for reuse next frame.
+        self.stage_plans.insert(stage, stage_plan);
+        self.systems.insert(stage, stage_descriptors);
     }
 
     /// Check if app is valid (for testing).

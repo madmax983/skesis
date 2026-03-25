@@ -21,7 +21,6 @@ impl EventStore {
     pub fn begin_stage(&mut self) {
         self.committed.clear();
         self.stage_buffer.clear();
-        self.system_buffer.clear();
     }
 
     /// Begin collecting events for one system execution.
@@ -49,7 +48,8 @@ impl EventStore {
 
     /// Commit stage events for read access.
     pub fn end_stage(&mut self) {
-        self.committed = std::mem::take(&mut self.stage_buffer);
+        std::mem::swap(&mut self.committed, &mut self.stage_buffer);
+        self.stage_buffer.clear();
     }
 
     /// Iterate committed events for a concrete event type without allocation.

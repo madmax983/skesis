@@ -70,6 +70,8 @@ pub fn plan_stage(systems: &[SystemDescriptor]) -> Vec<Vec<usize>> {
 /// Falls back to registration order when no constraints are present.
 /// Panics on cycles (which represent unsatisfiable constraints).
 fn topological_sort(systems: &[SystemDescriptor]) -> Vec<usize> {
+    use std::collections::{HashMap, VecDeque};
+
     let n = systems.len();
     if n == 0 {
         return Vec::new();
@@ -79,31 +81,24 @@ fn topological_sort(systems: &[SystemDescriptor]) -> Vec<usize> {
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut in_degree = vec![0u32; n];
 
-    // Build fn_id → index lookup.
-    let fn_id_to_index: Vec<(usize, usize)> = systems
+    // Build fn_id → index lookup (O(1) amortized instead of O(n) linear scan).
+    let fn_id_to_index: HashMap<usize, usize> = systems
         .iter()
         .enumerate()
         .map(|(i, s)| (s.fn_id(), i))
         .collect();
 
-    let find_index = |fn_id: usize| -> Option<usize> {
-        fn_id_to_index
-            .iter()
-            .find(|&&(fid, _)| fid == fn_id)
-            .map(|&(_, idx)| idx)
-    };
-
     for (i, system) in systems.iter().enumerate() {
         // "i.before(other)" means i must run before other → edge i → other.
         for &fn_id in system.before_constraints() {
-            if let Some(j) = find_index(fn_id) {
+            if let Some(&j) = fn_id_to_index.get(&fn_id) {
                 edges[i].push(j);
                 in_degree[j] += 1;
             }
         }
         // "i.after(other)" means other must run before i → edge other → i.
         for &fn_id in system.after_constraints() {
-            if let Some(j) = find_index(fn_id) {
+            if let Some(&j) = fn_id_to_index.get(&fn_id) {
                 edges[j].push(i);
                 in_degree[i] += 1;
             }
@@ -111,24 +106,22 @@ fn topological_sort(systems: &[SystemDescriptor]) -> Vec<usize> {
     }
 
     // Kahn's algorithm with registration-order tiebreaking.
-    let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+    let mut queue: VecDeque<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
     // Sort by registration index for deterministic output.
-    queue.sort_by_key(|&i| systems[i].registration_index());
+    queue.make_contiguous().sort_by_key(|&i| systems[i].registration_index());
 
     let mut result = Vec::with_capacity(n);
 
-    while let Some(node) = queue.first().copied() {
-        queue.remove(0);
+    while let Some(node) = queue.pop_front() {
         result.push(node);
 
         for &neighbor in &edges[node] {
             in_degree[neighbor] -= 1;
             if in_degree[neighbor] == 0 {
                 // Insert sorted by registration index for determinism.
-                let pos = queue
-                    .binary_search_by_key(&systems[neighbor].registration_index(), |&i| {
-                        systems[i].registration_index()
-                    })
+                let reg_idx = systems[neighbor].registration_index();
+                let pos = queue.make_contiguous()
+                    .binary_search_by_key(&reg_idx, |&i| systems[i].registration_index())
                     .unwrap_or_else(|pos| pos);
                 queue.insert(pos, neighbor);
             }

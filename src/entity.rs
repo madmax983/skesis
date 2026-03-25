@@ -4,6 +4,7 @@
 ///
 /// Generation prevents use-after-free bugs when entity IDs are reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(C)]
 pub struct Entity {
     index: u32,
     generation: u32,

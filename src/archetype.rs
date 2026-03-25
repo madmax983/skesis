@@ -155,10 +155,34 @@ impl Archetype {
         &self.entity_indices
     }
 
+    /// Track a new entity row, returning the dense index of the inserted row.
+    #[inline(always)]
+    fn track_entity(&mut self, entity: Entity) -> usize {
+        let row = self.entities.len();
+        self.entities.push(entity);
+        // Denormalized: entity_indices stores entity.index() separately for
+        // cache-friendly SIMD iteration without touching the generation field.
+        self.entity_indices.push(entity.index());
+        row
+    }
+
+    /// Swap-remove entity bookkeeping at `index`. Returns the removed entity and
+    /// the entity that was swapped into its slot (if any).
+    #[inline(always)]
+    fn untrack_entity(&mut self, index: usize) -> (Entity, Option<Entity>) {
+        let entity = self.entities.swap_remove(index);
+        self.entity_indices.swap_remove(index);
+        let swapped = if index < self.entities.len() {
+            Some(self.entities[index])
+        } else {
+            None
+        };
+        (entity, swapped)
+    }
+
     /// Add an entity with components to this archetype.
     pub fn push_entity(&mut self, entity: Entity, components: EntityComponentMap) {
-        self.entities.push(entity);
-        self.entity_indices.push(entity.index());
+        self.track_entity(entity);
 
         for (type_id, component) in components {
             if let Some(column) = self.components.get_mut(&type_id) {
@@ -176,19 +200,17 @@ impl Archetype {
     #[inline(always)]
     pub fn push_entity_empty(&mut self, entity: Entity) {
         debug_assert!(self.components.is_empty());
-        self.entities.push(entity);
-        self.entity_indices.push(entity.index());
+        self.track_entity(entity);
     }
 
     /// Add an entity with exactly one typed component to this archetype.
-    #[inline(always)]
+    #[inline]
     pub fn push_entity_single_component<T: 'static + Send + Sync>(
         &mut self,
         entity: Entity,
         component: T,
     ) {
-        self.entities.push(entity);
-        self.entity_indices.push(entity.index());
+        self.track_entity(entity);
 
         let column = self
             .components
@@ -209,37 +231,29 @@ impl Archetype {
             return None;
         }
 
-        let entity = self.entities.swap_remove(index);
-        self.entity_indices.swap_remove(index);
         let mut components = Vec::with_capacity(self.components.len());
-
         for (type_id, column) in &mut self.components {
-            if column.len() <= index {
-                panic!("column length mismatch while removing entity from archetype");
-            }
+            debug_assert!(column.len() > index, "column length mismatch while removing entity from archetype");
             components.push((*type_id, column.swap_remove_boxed(index)));
         }
 
+        let (entity, _swapped) = self.untrack_entity(index);
         Some((entity, components))
     }
 
     /// Remove an entity and drop all of its components without materializing a component map.
-    #[inline(always)]
+    #[inline]
     pub fn swap_remove_entity_discard(&mut self, index: usize) -> Option<Entity> {
         if index >= self.entities.len() {
             return None;
         }
 
-        let entity = self.entities.swap_remove(index);
-        self.entity_indices.swap_remove(index);
-
         for column in self.components.values_mut() {
-            if column.len() <= index {
-                panic!("column length mismatch while removing entity from archetype");
-            }
+            debug_assert!(column.len() > index, "column length mismatch while removing entity from archetype");
             column.swap_remove_drop(index);
         }
 
+        let (entity, _swapped) = self.untrack_entity(index);
         Some(entity)
     }
 
@@ -257,9 +271,7 @@ impl Archetype {
             return None;
         }
 
-        let destination_row_index = destination.entities.len();
-        destination.entities.push(entity);
-        destination.entity_indices.push(entity.index());
+        let destination_row_index = destination.track_entity(entity);
 
         for (type_id, source_column) in &mut self.components {
             let destination_column = destination
@@ -279,15 +291,8 @@ impl Archetype {
             .expect("added component column downcast failed");
         destination_typed.push(component);
 
-        let removed_entity = self.entities.swap_remove(index);
+        let (removed_entity, swapped_entity) = self.untrack_entity(index);
         debug_assert_eq!(removed_entity, entity);
-        self.entity_indices.swap_remove(index);
-
-        let swapped_entity = if index < self.entities.len() {
-            Some(self.entities[index])
-        } else {
-            None
-        };
 
         Some((destination_row_index, swapped_entity))
     }
@@ -305,9 +310,7 @@ impl Archetype {
             return None;
         }
 
-        let destination_row_index = destination.entities.len();
-        destination.entities.push(entity);
-        destination.entity_indices.push(entity.index());
+        let destination_row_index = destination.track_entity(entity);
 
         let removed_type_id = TypeId::of::<T>();
 
@@ -334,15 +337,8 @@ impl Archetype {
             .expect("removed component column downcast failed");
         let removed_value = removed_typed.swap_remove(index);
 
-        let removed_entity = self.entities.swap_remove(index);
+        let (removed_entity, swapped_entity) = self.untrack_entity(index);
         debug_assert_eq!(removed_entity, entity);
-        self.entity_indices.swap_remove(index);
-
-        let swapped_entity = if index < self.entities.len() {
-            Some(self.entities[index])
-        } else {
-            None
-        };
 
         Some((removed_value, destination_row_index, swapped_entity))
     }
@@ -355,8 +351,7 @@ impl Archetype {
         }
 
         debug_assert!(self.components.is_empty());
-        let entity = self.entities.swap_remove(index);
-        self.entity_indices.swap_remove(index);
+        let (entity, _swapped) = self.untrack_entity(index);
         Some(entity)
     }
 

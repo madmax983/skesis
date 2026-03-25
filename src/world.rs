@@ -811,6 +811,22 @@ impl World {
         }
     }
 
+    /// Look up an existing archetype for `component_set`, or create a new one.
+    fn get_or_create_archetype(&mut self, component_set: ComponentSet) -> ArchetypeId {
+        if let Some(&id) = self.archetype_map.get(&component_set) {
+            return id;
+        }
+        let id = ArchetypeId(self.next_archetype_id);
+        self.next_archetype_id += 1;
+        let archetype =
+            Archetype::new_with_factories(id, component_set.clone(), &self.column_factories);
+        self.archetypes.push(archetype);
+        self.add_component_transitions.push(Vec::new());
+        self.remove_component_transitions.push(Vec::new());
+        self.archetype_map.insert(component_set, id);
+        id
+    }
+
     /// Create a new empty world.
     pub fn new() -> Self {
         let world_id = NEXT_WORLD_ID.fetch_add(1, Ordering::Relaxed);
@@ -1398,11 +1414,6 @@ impl World {
     /// Despawn an entity and all its components.
     pub fn despawn(&mut self, entity: Entity) -> bool {
         let index = entity.index() as usize;
-        if index >= self.entity_generations.len()
-            || self.entity_generations[index] != entity.generation()
-        {
-            return false;
-        }
 
         let Some((archetype_id, archetype_index)) = self.location_of(entity) else {
             return false;
@@ -1555,22 +1566,7 @@ impl World {
                 self.register_component_type::<T>();
 
                 let singleton_set = ComponentSet::new().with::<T>();
-                let id = if let Some(&id) = self.archetype_map.get(&singleton_set) {
-                    id
-                } else {
-                    let id = ArchetypeId(self.next_archetype_id);
-                    self.next_archetype_id += 1;
-                    let archetype = Archetype::new_with_factories(
-                        id,
-                        singleton_set.clone(),
-                        &self.column_factories,
-                    );
-                    self.archetypes.push(archetype);
-                    self.add_component_transitions.push(Vec::new());
-                    self.remove_component_transitions.push(Vec::new());
-                    self.archetype_map.insert(singleton_set, id);
-                    id
-                };
+                let id = self.get_or_create_archetype(singleton_set);
                 self.single_component_archetypes.push((type_id, id));
                 id
             };
@@ -1626,20 +1622,7 @@ impl World {
                     .clone();
                 new_set = new_set.with::<T>();
 
-                // Get or create archetype
-                let id = if let Some(&id) = self.archetype_map.get(&new_set) {
-                    id
-                } else {
-                    let id = ArchetypeId(self.next_archetype_id);
-                    self.next_archetype_id += 1;
-                    let archetype =
-                        Archetype::new_with_factories(id, new_set.clone(), &self.column_factories);
-                    self.archetypes.push(archetype);
-                    self.add_component_transitions.push(Vec::new());
-                    self.remove_component_transitions.push(Vec::new());
-                    self.archetype_map.insert(new_set, id);
-                    id
-                };
+                let id = self.get_or_create_archetype(new_set);
                 self.cache_add_component_transition(old_arch_id, type_id, id);
                 id
             };
@@ -1709,19 +1692,7 @@ impl World {
                     .clone()
                     .without::<T>();
 
-                let id = if let Some(&id) = self.archetype_map.get(&new_set) {
-                    id
-                } else {
-                    let id = ArchetypeId(self.next_archetype_id);
-                    self.next_archetype_id += 1;
-                    let archetype =
-                        Archetype::new_with_factories(id, new_set.clone(), &self.column_factories);
-                    self.archetypes.push(archetype);
-                    self.add_component_transitions.push(Vec::new());
-                    self.remove_component_transitions.push(Vec::new());
-                    self.archetype_map.insert(new_set, id);
-                    id
-                };
+                let id = self.get_or_create_archetype(new_set);
                 self.cache_remove_component_transition(old_arch_id, type_id, id);
                 id
             };

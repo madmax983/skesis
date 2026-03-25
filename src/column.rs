@@ -34,6 +34,7 @@ impl<T> TypedColumn<T> {
         self.data.push(value);
     }
 
+    #[inline]
     pub(crate) fn swap_remove(&mut self, index: usize) -> T {
         self.data.swap_remove(index)
     }
@@ -96,7 +97,7 @@ impl<T: 'static + Send + Sync> ErasedColumn for TypedColumn<T> {
     }
 
     fn swap_remove_drop(&mut self, index: usize) {
-        self.data.swap_remove(index);
+        let _ = self.data.swap_remove(index);
     }
 
     fn as_bytes(&self) -> &[u8] {
