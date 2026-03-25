@@ -3486,34 +3486,46 @@ impl World {
             return false; // Entity's archetype doesn't have component T.
         }
 
-        // Compute global element index across all archetypes containing T.
-        let mut global_index = 0usize;
-        for a in &self.archetypes {
-            if a.id() == arch_id {
-                global_index += arch_row;
-                break;
-            }
-            if a.component_set().contains_type_id(&type_id) {
-                global_index += a.len();
-            }
+        // Fast exit: version unchanged → nothing mutated since snapshot.
+        if tracker.snapshot_version(reader_id) == Some(tracker.column_version) {
+            return false;
         }
 
-        // Collect current column bytes across all archetypes with T.
-        let mut all_bytes = Vec::new();
-        for a in &self.archetypes {
-            if let Some(column) = a.component_column(&type_id) {
-                all_bytes.extend_from_slice(column.as_bytes());
-            }
-        }
-
-        let stride = std::mem::size_of::<T>();
-        let Some(bitset) = tracker.changed_bitset(reader_id, &all_bytes, stride) else {
-            return false; // No changes (fast exit or no snapshot).
+        let snap_bytes = match tracker.snapshot_bytes(reader_id) {
+            Some(b) => b,
+            None => return true, // No snapshot = assume changed.
         };
 
-        let word = global_index / 64;
-        let bit = global_index % 64;
-        word < bitset.len() && (bitset[word] & (1u64 << bit)) != 0
+        let stride = std::mem::size_of::<T>();
+
+        // Walk archetypes to find this entity's byte range in the snapshot.
+        let mut snap_offset = 0usize;
+        for a in &self.archetypes {
+            let Some(column) = a.component_column(&type_id) else {
+                continue;
+            };
+            let col_len = column.as_bytes().len();
+
+            if a.id() == arch_id {
+                let element_start = arch_row * stride;
+                let element_end = element_start + stride;
+                let snap_element_start = snap_offset + element_start;
+                let snap_element_end = snap_offset + element_end;
+
+                // Entity was added after snapshot — treat as changed.
+                if snap_element_end > snap_bytes.len() {
+                    return true;
+                }
+
+                let current_element = &column.as_bytes()[element_start..element_end];
+                let snap_element = &snap_bytes[snap_element_start..snap_element_end];
+                return crate::change::any_bytes_differ(snap_element, current_element);
+            }
+
+            snap_offset += col_len;
+        }
+
+        false // Entity's archetype not found with component T.
     }
 }
 
