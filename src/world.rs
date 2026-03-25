@@ -3050,7 +3050,7 @@ impl World {
 
     /// Check if an entity is a leaf (has no children under relationship R).
     pub fn is_leaf<R: Relation>(&self, entity: Entity) -> bool {
-        self.children::<R>(entity).is_empty()
+        !self.relationships.has_any_source::<R>(entity)
     }
 
     /// Insert or replace a typed resource.
