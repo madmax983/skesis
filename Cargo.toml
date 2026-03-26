@@ -5,7 +5,7 @@ edition = "2024"
 description = "A high-performance Entity Component System with anchor+delta change detection, relationships, and raw byte serialization"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/madmax983/skesis"
-keywords = ["ecs", "gamedev", "entity-component-system", "change-detection"]
+keywords = ["ecs", "gamedev", "entity-component", "change-detection"]
 categories = ["game-development", "data-structures"]
 readme = "README.md"
 
