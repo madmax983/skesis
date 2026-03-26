@@ -11,11 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Replace HashMap columns with sorted Vec + binary search ([9c8fea8](https://github.com/madmax983/skesis/commit/9c8fea8165a3f97c453b1e21e7c59a2c24d2a779))
 
+### Bug Fixes
+
+- Resolve all 48 compiler and clippy warnings ([1fe433f](https://github.com/madmax983/skesis/commit/1fe433ff17677598e2e2c7e7051714cc3af8ec34))
+- Shorten keyword for crates.io 20-char limit ([a5eefdb](https://github.com/madmax983/skesis/commit/a5eefdbd9f2cd91b2b8c6e68eea7a049f128548d))
+
 ### CI/CD
 
 - Auto-commit generated CHANGELOG.md back to trunk on release ([4fc9c7f](https://github.com/madmax983/skesis/commit/4fc9c7f5c9167217d3f8f1af992d4fb4a63cd001))
 - Allow dirty working dir for cargo publish in release workflow ([8327e73](https://github.com/madmax983/skesis/commit/8327e73d9caf45e4ef73d246a6ce901073bd5331))
 - Add codecov, dependabot, release workflow, and changelog for v0.1.0 ([62dc8ef](https://github.com/madmax983/skesis/commit/62dc8ef2c43103a0b8f2f13874b751b4498daeac))
+
+### Documentation
+
+- Update CHANGELOG.md for v0.1.0 ([c3e5c7a](https://github.com/madmax983/skesis/commit/c3e5c7a0e9c6b9da3d0baae88747fa2f01363835))
 
 ### Observers
 
