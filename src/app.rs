@@ -137,7 +137,7 @@ impl App {
     /// Run all systems in a stage.
     fn run_stage(&mut self, stage: Stage) {
         // Temporarily take systems out to split the borrow between descriptors and world.
-        let Some(mut stage_descriptors) = self.systems.remove(&stage) else {
+        let Some(stage_descriptors) = self.systems.remove(&stage) else {
             return;
         };
         if stage_descriptors.is_empty() {

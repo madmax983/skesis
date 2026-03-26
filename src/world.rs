@@ -1,13 +1,13 @@
 //! World manages all entities, components, and archetypes.
 
-use crate::change::{ChangeHistory, ChangeTracker};
+use crate::change::ChangeHistory;
 use crate::column::{ColumnFactory, typed_column_factory};
 use crate::command::{CommandRecorder, CommandStore};
 use crate::relation::{Relation, RelationshipStore};
 use crate::snapshot::{ArchetypeSnapshot, WorldSnapshot};
 use crate::sparse_set::{ErasedSparseSet, SparseSet};
 use crate::{Archetype, ArchetypeId, Component, ComponentSet, Entity, EventStore, ResourceStore};
-use std::any::{Any, TypeId};
+use std::any::TypeId;
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -998,11 +998,11 @@ impl World {
     }
 
     #[inline(always)]
-    fn get_component_cached_by_entity_index<'a, T: Component>(
-        &'a self,
+    fn get_component_cached_by_entity_index<T: Component>(
+        &self,
         entity_index: usize,
         generation: u32,
-    ) -> Option<&'a T> {
+    ) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         let component_ptr = GET_COMPONENT_CACHE.with(|slot| {
             // SAFETY:
@@ -1072,10 +1072,10 @@ impl World {
     }
 
     #[inline(always)]
-    fn get_component_cached_by_entity_index_generation_zero<'a, T: Component>(
-        &'a self,
+    fn get_component_cached_by_entity_index_generation_zero<T: Component>(
+        &self,
         entity_index: usize,
-    ) -> Option<&'a T> {
+    ) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         let component_ptr = GET_COMPONENT_ZERO_GENERATION_CACHE.with(|slot| {
             // SAFETY:
@@ -1188,11 +1188,11 @@ impl World {
     }
 
     #[inline(always)]
-    fn get_component_mut_cached_by_entity_index<'a, T: Component>(
-        &'a mut self,
+    fn get_component_mut_cached_by_entity_index<T: Component>(
+        &mut self,
         entity_index: usize,
         generation: u32,
-    ) -> Option<&'a mut T> {
+    ) -> Option<&mut T> {
         let type_id = TypeId::of::<T>();
         let cache_is_fresh = {
             let cache = &self.get_component_mut_cache;
@@ -1266,10 +1266,10 @@ impl World {
     }
 
     #[inline(always)]
-    fn get_component_mut_cached_by_entity_index_generation_zero<'a, T: Component>(
-        &'a mut self,
+    fn get_component_mut_cached_by_entity_index_generation_zero<T: Component>(
+        &mut self,
         entity_index: usize,
-    ) -> Option<&'a mut T> {
+    ) -> Option<&mut T> {
         let type_id = TypeId::of::<T>();
         let cache_is_fresh = {
             let cache = &self.get_component_mut_zero_generation_cache;
@@ -2801,11 +2801,10 @@ impl World {
         }
 
         // Write the value.
-        if let Some(columns) = self.archetypes[arch_id.0 as usize].components_mut::<T>() {
-            if let Some(slot) = columns.get_mut(arch_index) {
+        if let Some(columns) = self.archetypes[arch_id.0 as usize].components_mut::<T>()
+            && let Some(slot) = columns.get_mut(arch_index) {
                 *slot = component;
             }
-        }
 
         // Fire on_set observers with the new value.
         if let Some(comp) = self.archetypes[arch_id.0 as usize]
@@ -3238,7 +3237,7 @@ impl World {
             let entity_bytes = unsafe {
                 std::slice::from_raw_parts(
                     entities.as_ptr().cast::<u8>(),
-                    entities.len() * std::mem::size_of::<Entity>(),
+                    std::mem::size_of_val(entities),
                 )
             }
             .to_vec();
@@ -3246,7 +3245,7 @@ impl World {
             let entity_index_bytes = unsafe {
                 std::slice::from_raw_parts(
                     entity_indices.as_ptr().cast::<u8>(),
-                    entity_indices.len() * std::mem::size_of::<u32>(),
+                    std::mem::size_of_val(entity_indices),
                 )
             }
             .to_vec();

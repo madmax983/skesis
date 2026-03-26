@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Struct fields exist for realistic layout/size, not read access.
+
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use skesis::World;
 

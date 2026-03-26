@@ -29,6 +29,7 @@ pub trait QueryTuple<'a>: Sized {
 macro_rules! impl_query_tuple {
     // Base case: single component
     ($($idx:tt: $ty:ident),+) => {
+        #[allow(non_snake_case)]
         impl<'a, $($ty: Component),+> QueryTuple<'a> for ($(&'a $ty,)+) {
             fn matches(archetype: &Archetype) -> bool {
                 let cs = archetype.component_set();
@@ -68,8 +69,7 @@ impl_query_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{ComponentSet, World};
+    use crate::World;
 
     #[derive(Debug, PartialEq)]
     struct Pos {

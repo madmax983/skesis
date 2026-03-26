@@ -17,6 +17,7 @@ pub(crate) trait ErasedColumn: Send + Sync {
     /// Restore column contents from raw bytes. Replaces all existing data.
     fn restore_from_bytes(&mut self, bytes: &[u8]);
     /// Clear all elements.
+    #[allow(dead_code)]
     fn clear(&mut self);
 }
 
@@ -115,7 +116,7 @@ impl<T: 'static + Send + Sync> ErasedColumn for TypedColumn<T> {
     fn restore_from_bytes(&mut self, bytes: &[u8]) {
         let stride = std::mem::size_of::<T>();
         assert!(
-            stride > 0 && bytes.len() % stride == 0,
+            stride > 0 && bytes.len().is_multiple_of(stride),
             "byte length must be a multiple of element stride"
         );
         let count = bytes.len() / stride;

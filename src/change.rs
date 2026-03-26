@@ -73,7 +73,7 @@ pub fn diff_to_bitset(before: &[u8], after: &[u8], stride: usize) -> Vec<u64> {
     } else {
         before.len() / stride
     };
-    let word_count = (element_count + 63) / 64;
+    let word_count = element_count.div_ceil(64);
     let mut bits = vec![0u64; word_count];
 
     #[cfg(target_arch = "x86_64")]
@@ -88,7 +88,7 @@ pub fn diff_to_bitset(before: &[u8], after: &[u8], stride: usize) -> Vec<u64> {
     }
 
     // Scalar fast path: when stride is a multiple of 8, compare u64 words directly.
-    if stride >= 8 && stride % 8 == 0 {
+    if stride >= 8 && stride.is_multiple_of(8) {
         let words_per_element = stride / 8;
         let before_words =
             unsafe { std::slice::from_raw_parts(before.as_ptr().cast::<u64>(), before.len() / 8) };
@@ -138,49 +138,53 @@ unsafe fn diff_to_bitset_avx2_stride8(
         _mm256_movemask_pd, _mm256_setzero_si256, _mm256_xor_si256,
     };
 
-    let zero = _mm256_setzero_si256();
-    let chunks = element_count / 4;
-    let before_ptr = before.as_ptr();
-    let after_ptr = after.as_ptr();
+    // SAFETY: Caller guarantees valid aligned slices of sufficient length,
+    // and the #[target_feature(enable = "avx2")] gate ensures AVX2 is available.
+    unsafe {
+        let zero = _mm256_setzero_si256();
+        let chunks = element_count / 4;
+        let before_ptr = before.as_ptr();
+        let after_ptr = after.as_ptr();
 
-    for chunk in 0..chunks {
-        let offset = chunk * 32; // 4 elements × 8 bytes
-        let b = _mm256_loadu_si256(before_ptr.add(offset).cast::<__m256i>());
-        let a = _mm256_loadu_si256(after_ptr.add(offset).cast::<__m256i>());
+        for chunk in 0..chunks {
+            let offset = chunk * 32; // 4 elements × 8 bytes
+            let b = _mm256_loadu_si256(before_ptr.add(offset).cast::<__m256i>());
+            let a = _mm256_loadu_si256(after_ptr.add(offset).cast::<__m256i>());
 
-        // XOR: zero lanes where equal, non-zero where different.
-        let xor = _mm256_xor_si256(b, a);
-        // Compare each 64-bit lane to zero: all-ones if equal (unchanged).
-        let eq = _mm256_cmpeq_epi64(xor, zero);
-        // Extract MSB of each 64-bit lane as a 4-bit mask.
-        // Bit is 1 if lane was all-ones (equal/unchanged), 0 if different.
-        let mask = _mm256_movemask_pd(_mm256_castsi256_pd(eq)) as u32;
-        // Invert: we want bits set where elements CHANGED (were not equal).
-        let changed_mask = (!mask) & 0xF;
+            // XOR: zero lanes where equal, non-zero where different.
+            let xor = _mm256_xor_si256(b, a);
+            // Compare each 64-bit lane to zero: all-ones if equal (unchanged).
+            let eq = _mm256_cmpeq_epi64(xor, zero);
+            // Extract MSB of each 64-bit lane as a 4-bit mask.
+            // Bit is 1 if lane was all-ones (equal/unchanged), 0 if different.
+            let mask = _mm256_movemask_pd(_mm256_castsi256_pd(eq)) as u32;
+            // Invert: we want bits set where elements CHANGED (were not equal).
+            let changed_mask = (!mask) & 0xF;
 
-        if changed_mask != 0 {
-            let global_element = chunk * 4;
-            let word_idx = global_element / 64;
-            let bit_offset = global_element % 64;
-            // The 4 changed bits land within one or two u64 words.
-            bits[word_idx] |= (changed_mask as u64) << bit_offset;
-            // Handle overflow into next word (when bit_offset > 60).
-            if bit_offset > 60 && word_idx + 1 < bits.len() {
-                bits[word_idx + 1] |= (changed_mask as u64) >> (64 - bit_offset);
+            if changed_mask != 0 {
+                let global_element = chunk * 4;
+                let word_idx = global_element / 64;
+                let bit_offset = global_element % 64;
+                // The 4 changed bits land within one or two u64 words.
+                bits[word_idx] |= (changed_mask as u64) << bit_offset;
+                // Handle overflow into next word (when bit_offset > 60).
+                if bit_offset > 60 && word_idx + 1 < bits.len() {
+                    bits[word_idx + 1] |= (changed_mask as u64) >> (64 - bit_offset);
+                }
             }
         }
-    }
 
-    // Scalar tail: remaining elements that don't fill a full 4-element chunk.
-    let tail_start = chunks * 4;
-    let before_words =
-        unsafe { std::slice::from_raw_parts(before.as_ptr().cast::<u64>(), before.len() / 8) };
-    let after_words =
-        unsafe { std::slice::from_raw_parts(after.as_ptr().cast::<u64>(), after.len() / 8) };
+        // Scalar tail: remaining elements that don't fill a full 4-element chunk.
+        let tail_start = chunks * 4;
+        let before_words =
+            std::slice::from_raw_parts(before.as_ptr().cast::<u64>(), before.len() / 8);
+        let after_words =
+            std::slice::from_raw_parts(after.as_ptr().cast::<u64>(), after.len() / 8);
 
-    for i in tail_start..element_count {
-        if before_words[i] != after_words[i] {
-            bits[i / 64] |= 1u64 << (i % 64);
+        for i in tail_start..element_count {
+            if before_words[i] != after_words[i] {
+                bits[i / 64] |= 1u64 << (i % 64);
+            }
         }
     }
 }
@@ -195,10 +199,6 @@ pub(crate) struct ChangeTracker {
 }
 
 impl ChangeTracker {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     pub(crate) fn bump_version(&mut self) {
         self.column_version = self.column_version.wrapping_add(1);
     }
@@ -208,6 +208,7 @@ impl ChangeTracker {
             .insert(reader_id, (self.column_version, column_bytes.to_vec()));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn has_changes(&self, reader_id: u64, current_bytes: &[u8]) -> bool {
         let Some((snap_version, snap_bytes)) = self.snapshots.get(&reader_id) else {
             return true; // No snapshot = assume everything changed.
@@ -233,6 +234,7 @@ impl ChangeTracker {
     }
 
     /// Returns None if no changes (fast exit). Some(bitset) with per-element changed bits otherwise.
+    #[allow(dead_code)]
     pub(crate) fn changed_bitset(
         &self,
         reader_id: u64,
@@ -252,7 +254,7 @@ impl ChangeTracker {
             } else {
                 current_bytes.len() / element_stride
             };
-            let word_count = (element_count + 63) / 64;
+            let word_count = element_count.div_ceil(64);
             let mut bits = vec![u64::MAX; word_count];
             // Mask the final word so only valid element bits are set.
             let remainder = element_count % 64;
@@ -292,7 +294,7 @@ impl ChangeHistory {
     pub fn track<T: 'static>(&mut self) {
         self.trackers
             .entry(TypeId::of::<T>())
-            .or_insert_with(ChangeTracker::new);
+            .or_default();
     }
 
     /// Check if a component type is tracked.
@@ -326,10 +328,6 @@ impl ChangeHistory {
         self.trackers.get(&TypeId::of::<T>())
     }
 
-    /// Get the tracker for a component type by TypeId.
-    pub(crate) fn tracker_by_type_id(&self, type_id: &TypeId) -> Option<&ChangeTracker> {
-        self.trackers.get(type_id)
-    }
 }
 
 impl Default for ChangeHistory {
@@ -393,7 +391,7 @@ mod tests {
     #[test]
     fn diff_to_bitset_stride8_hits_avx2_path() {
         // 8 elements of stride 8 = 64 bytes (two AVX2 chunks of 4 elements).
-        let mut before = [0u8; 64];
+        let before = [0u8; 64];
         let mut after = [0u8; 64];
         // Change element 1 (bytes 8..16) and element 5 (bytes 40..48).
         after[8] = 1;
@@ -411,7 +409,7 @@ mod tests {
     #[test]
     fn diff_to_bitset_stride8_large() {
         // 100 elements of stride 8 = 800 bytes. Tests AVX2 + scalar tail.
-        let mut before = vec![0u8; 800];
+        let before = vec![0u8; 800];
         let mut after = vec![0u8; 800];
         // Change elements 0, 50, 99.
         after[0] = 1; // element 0
@@ -430,7 +428,7 @@ mod tests {
 
     #[test]
     fn tracker_snapshot_and_check_no_change() {
-        let mut tracker = ChangeTracker::new();
+        let mut tracker = ChangeTracker::default();
         let column_bytes = [0u8; 16];
         tracker.take_snapshot(1, &column_bytes);
         let changed = tracker.has_changes(1, &column_bytes);
@@ -439,7 +437,7 @@ mod tests {
 
     #[test]
     fn tracker_detects_change_after_version_bump() {
-        let mut tracker = ChangeTracker::new();
+        let mut tracker = ChangeTracker::default();
         let before = [0u8; 16];
         tracker.take_snapshot(1, &before);
         tracker.bump_version();
@@ -450,7 +448,7 @@ mod tests {
 
     #[test]
     fn tracker_changed_bitset() {
-        let mut tracker = ChangeTracker::new();
+        let mut tracker = ChangeTracker::default();
         let before = [0u8; 16];
         tracker.take_snapshot(1, &before);
         tracker.bump_version();
@@ -467,7 +465,7 @@ mod tests {
 
     #[test]
     fn tracker_fast_exit_when_version_unchanged() {
-        let mut tracker = ChangeTracker::new();
+        let mut tracker = ChangeTracker::default();
         let bytes = [0u8; 16];
         tracker.take_snapshot(1, &bytes);
         let bits = tracker.changed_bitset(1, &bytes, 4);
@@ -476,14 +474,14 @@ mod tests {
 
     #[test]
     fn tracker_no_snapshot_has_changes_returns_true() {
-        let tracker = ChangeTracker::new();
+        let tracker = ChangeTracker::default();
         let bytes = [0u8; 16];
         assert!(tracker.has_changes(99, &bytes));
     }
 
     #[test]
     fn tracker_per_reader_independent() {
-        let mut tracker = ChangeTracker::new();
+        let mut tracker = ChangeTracker::default();
         let bytes = [0u8; 8];
         tracker.take_snapshot(1, &bytes);
         tracker.take_snapshot(2, &bytes);

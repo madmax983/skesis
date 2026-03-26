@@ -139,6 +139,7 @@ pub(crate) trait ErasedSparseSet: Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn contains_entity(&self, entity: Entity) -> bool;
     fn remove_entity(&mut self, entity: Entity) -> bool;
+    #[allow(dead_code)]
     fn len(&self) -> usize;
 }
 
@@ -162,11 +163,6 @@ impl<T: 'static + Send + Sync> ErasedSparseSet for SparseSet<T> {
     fn len(&self) -> usize {
         self.len()
     }
-}
-
-/// Create a new empty type-erased sparse set for component type T.
-pub(crate) fn erased_sparse_set<T: 'static + Send + Sync>() -> Box<dyn ErasedSparseSet> {
-    Box::new(SparseSet::<T>::new())
 }
 
 #[cfg(test)]
