@@ -6,7 +6,8 @@ use std::any::TypeId;
 use std::collections::HashMap;
 
 type EntityComponentMap = Vec<(TypeId, ComponentValue)>;
-type ArchetypeColumns = HashMap<TypeId, Box<dyn ErasedColumn>>;
+/// Sorted by TypeId for binary-search lookup. Eliminates HashMap overhead on every access.
+type ArchetypeColumns = Vec<(TypeId, Box<dyn ErasedColumn>)>;
 
 /// Unique identifier for an archetype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -103,11 +104,11 @@ impl Archetype {
         component_set: ComponentSet,
         factories: &HashMap<TypeId, ColumnFactory>,
     ) -> Self {
-        let mut components = HashMap::new();
-
+        // Build columns in ComponentSet order (already sorted by TypeId).
+        let mut components: ArchetypeColumns = Vec::new();
         for &type_id in component_set.iter() {
             if let Some(factory) = factories.get(&type_id) {
-                components.insert(type_id, factory());
+                components.push((type_id, factory()));
             }
         }
 
@@ -118,6 +119,21 @@ impl Archetype {
             entity_indices: Vec::new(),
             components,
         }
+    }
+
+    /// Find the index of a column by TypeId via binary search.
+    #[inline]
+    fn find_column(&self, type_id: &TypeId) -> Option<usize> {
+        self.components
+            .binary_search_by_key(type_id, |(tid, _)| *tid)
+            .ok()
+    }
+
+    /// Find the index of a column by TypeId, or return the insertion point.
+    #[inline]
+    fn find_column_or_insert_point(&self, type_id: &TypeId) -> Result<usize, usize> {
+        self.components
+            .binary_search_by_key(type_id, |(tid, _)| *tid)
     }
 
     /// Get the archetype ID.
@@ -185,14 +201,15 @@ impl Archetype {
         self.track_entity(entity);
 
         for (type_id, component) in components {
-            if let Some(column) = self.components.get_mut(&type_id) {
-                column.push_boxed(component);
-                continue;
+            match self.find_column_or_insert_point(&type_id) {
+                Ok(idx) => self.components[idx].1.push_boxed(component),
+                Err(insert_pos) => {
+                    let mut column = BoxedColumn::new();
+                    column.push_boxed(component);
+                    self.components
+                        .insert(insert_pos, (type_id, Box::new(column)));
+                }
             }
-
-            let mut column = BoxedColumn::new();
-            column.push_boxed(component);
-            self.components.insert(type_id, Box::new(column));
         }
     }
 
@@ -212,11 +229,11 @@ impl Archetype {
     ) {
         self.track_entity(entity);
 
-        let column = self
-            .components
-            .get_mut(&TypeId::of::<T>())
+        let idx = self
+            .find_column(&TypeId::of::<T>())
             .expect("archetype missing typed column for single-component insertion");
-        let typed = column
+        let typed = self.components[idx]
+            .1
             .as_any_mut()
             .downcast_mut::<TypedColumn<T>>()
             .expect("typed column downcast failed during single-component insertion");
@@ -248,7 +265,7 @@ impl Archetype {
             return None;
         }
 
-        for column in self.components.values_mut() {
+        for (_, column) in &mut self.components {
             debug_assert!(column.len() > index, "column length mismatch while removing entity from archetype");
             column.swap_remove_drop(index);
         }
@@ -274,18 +291,17 @@ impl Archetype {
         let destination_row_index = destination.track_entity(entity);
 
         for (type_id, source_column) in &mut self.components {
-            let destination_column = destination
-                .components
-                .get_mut(type_id)
+            let dest_idx = destination
+                .find_column(type_id)
                 .expect("destination archetype missing source component column");
-            source_column.swap_remove_into(index, destination_column.as_mut());
+            source_column.swap_remove_into(index, destination.components[dest_idx].1.as_mut());
         }
 
-        let destination_typed_column = destination
-            .components
-            .get_mut(&TypeId::of::<T>())
+        let dest_idx = destination
+            .find_column(&TypeId::of::<T>())
             .expect("destination archetype missing added component column");
-        let destination_typed = destination_typed_column
+        let destination_typed = destination.components[dest_idx]
+            .1
             .as_any_mut()
             .downcast_mut::<TypedColumn<T>>()
             .expect("added component column downcast failed");
@@ -319,19 +335,17 @@ impl Archetype {
             if *type_id == removed_type_id {
                 continue;
             }
-            let destination_column = destination
-                .components
-                .get_mut(type_id)
+            let dest_idx = destination
+                .find_column(type_id)
                 .expect("destination archetype missing source component column");
-            source_column.swap_remove_into(index, destination_column.as_mut());
+            source_column.swap_remove_into(index, destination.components[dest_idx].1.as_mut());
         }
 
         // Extract the removed component value from the dropped column.
-        let removed_column = self
-            .components
-            .get_mut(&removed_type_id)
+        let src_idx = self
+            .find_column(&removed_type_id)
             .expect("source archetype missing removed component column");
-        let removed_typed = removed_column
+        let removed_typed = self.components[src_idx].1
             .as_any_mut()
             .downcast_mut::<TypedColumn<T>>()
             .expect("removed component column downcast failed");
@@ -357,7 +371,8 @@ impl Archetype {
 
     /// Get a raw column reference by `TypeId`, for byte-level change detection.
     pub(crate) fn component_column(&self, type_id: &TypeId) -> Option<&dyn ErasedColumn> {
-        self.components.get(type_id).map(|c| c.as_ref())
+        let idx = self.find_column(type_id)?;
+        Some(self.components[idx].1.as_ref())
     }
 
     /// Restore entity and entity_index arrays from slices (used by snapshot loading).
@@ -368,22 +383,22 @@ impl Archetype {
 
     /// Restore a column's data from raw bytes (used by snapshot loading).
     pub(crate) fn restore_column_bytes(&mut self, type_id: &TypeId, bytes: &[u8]) {
-        if let Some(column) = self.components.get_mut(type_id) {
-            column.restore_from_bytes(bytes);
+        if let Some(idx) = self.find_column(type_id) {
+            self.components[idx].1.restore_from_bytes(bytes);
         }
     }
 
     /// Get components of a specific type.
     pub fn components<T: 'static + Send + Sync>(&self) -> Option<&[T]> {
-        let column = self.components.get(&TypeId::of::<T>())?;
-        let typed = column.as_any().downcast_ref::<TypedColumn<T>>()?;
+        let idx = self.find_column(&TypeId::of::<T>())?;
+        let typed = self.components[idx].1.as_any().downcast_ref::<TypedColumn<T>>()?;
         Some(typed.as_slice())
     }
 
     /// Get mutable components of a specific type.
     pub fn components_mut<T: 'static + Send + Sync>(&mut self) -> Option<&mut [T]> {
-        let column = self.components.get_mut(&TypeId::of::<T>())?;
-        let typed = column.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
+        let idx = self.find_column(&TypeId::of::<T>())?;
+        let typed = self.components[idx].1.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
         Some(typed.as_mut_slice())
     }
 
@@ -392,8 +407,8 @@ impl Archetype {
         &mut self,
     ) -> Option<(&[Entity], &mut [T])> {
         let entities = self.entities.as_slice();
-        let column = self.components.get_mut(&TypeId::of::<T>())?;
-        let typed = column.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
+        let idx = self.find_column(&TypeId::of::<T>())?;
+        let typed = self.components[idx].1.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
         Some((entities, typed.as_mut_slice()))
     }
 
@@ -402,8 +417,8 @@ impl Archetype {
         &mut self,
     ) -> Option<(&[u32], &mut [T])> {
         let entity_indices = self.entity_indices.as_slice();
-        let column = self.components.get_mut(&TypeId::of::<T>())?;
-        let typed = column.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
+        let idx = self.find_column(&TypeId::of::<T>())?;
+        let typed = self.components[idx].1.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
         Some((entity_indices, typed.as_mut_slice()))
     }
 }
