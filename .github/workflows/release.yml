@@ -22,16 +22,29 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Generate changelog
+      - name: Generate release notes
         uses: orhun/git-cliff-action@v4
-        id: changelog
+        id: release-notes
         with:
           args: --latest --strip header
+
+      - name: Generate full changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          args: --output CHANGELOG.md
+
+      - name: Commit changelog to trunk
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: update CHANGELOG.md for ${{ github.ref_name }}"
+          git push origin HEAD:trunk
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          body: ${{ steps.changelog.outputs.content }}
+          body: ${{ steps.release-notes.outputs.content }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to crates.io
