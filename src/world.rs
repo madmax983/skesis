@@ -14,7 +14,10 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-type ErasedObserverFn = Box<dyn Fn(Entity, &dyn Any) + Send + Sync>;
+/// Type-erased observer callback. Takes entity and a raw pointer to the component value.
+/// The pointer is guaranteed to point to a valid `T` matching the TypeId key under which
+/// this observer is registered.
+type ErasedObserverFn = Box<dyn Fn(Entity, *const u8) + Send + Sync>;
 
 static NEXT_WORLD_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -950,8 +953,9 @@ impl World {
                 .components::<T>()
                 .and_then(|s| s.get(row))
         {
+            let ptr = (component as *const T).cast::<u8>();
             for observer in observers {
-                observer(entity, component);
+                observer(entity, ptr);
             }
         }
     }
@@ -962,8 +966,9 @@ impl World {
             return;
         }
         if let Some(observers) = self.on_remove_observers.get(&TypeId::of::<T>()) {
+            let ptr = (value as *const T).cast::<u8>();
             for observer in observers {
-                observer(entity, value);
+                observer(entity, ptr);
             }
         }
     }
@@ -974,8 +979,9 @@ impl World {
             return;
         }
         if let Some(observers) = self.on_set_observers.get(&TypeId::of::<T>()) {
+            let ptr = (value as *const T).cast::<u8>();
             for observer in observers {
-                observer(entity, value);
+                observer(entity, ptr);
             }
         }
     }
@@ -2719,10 +2725,10 @@ impl World {
         self.on_add_observers
             .entry(TypeId::of::<T>())
             .or_default()
-            .push(Box::new(move |entity, value| {
-                if let Some(typed) = value.downcast_ref::<T>() {
-                    callback(entity, typed);
-                }
+            .push(Box::new(move |entity, ptr| {
+                // SAFETY: The fire_on_add method guarantees ptr points to a valid T.
+                let typed = unsafe { &*ptr.cast::<T>() };
+                callback(entity, typed);
             }));
         self.on_add_observer_count += 1;
     }
@@ -2738,10 +2744,10 @@ impl World {
         self.on_remove_observers
             .entry(TypeId::of::<T>())
             .or_default()
-            .push(Box::new(move |entity, value| {
-                if let Some(typed) = value.downcast_ref::<T>() {
-                    callback(entity, typed);
-                }
+            .push(Box::new(move |entity, ptr| {
+                // SAFETY: The fire_on_remove method guarantees ptr points to a valid T.
+                let typed = unsafe { &*ptr.cast::<T>() };
+                callback(entity, typed);
             }));
         self.on_remove_observer_count += 1;
     }
@@ -2759,10 +2765,10 @@ impl World {
         self.on_set_observers
             .entry(TypeId::of::<T>())
             .or_default()
-            .push(Box::new(move |entity, value| {
-                if let Some(typed) = value.downcast_ref::<T>() {
-                    callback(entity, typed);
-                }
+            .push(Box::new(move |entity, ptr| {
+                // SAFETY: The fire_on_set method guarantees ptr points to a valid T.
+                let typed = unsafe { &*ptr.cast::<T>() };
+                callback(entity, typed);
             }));
         self.on_set_observer_count += 1;
     }
