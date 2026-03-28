@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-28
+
+### Documentation
+
+- Update CHANGELOG.md for v0.1.0 ([7d46303](https://github.com/madmax983/skesis/commit/7d46303c280d97584c656d683ef99c3c0b595a26))
+
+### Features
+
+- Add resource scope ([351cd0b](https://github.com/madmax983/skesis/commit/351cd0bf981d94de9b1dff32ff2a167a38891d94))
+
+### Performance
+
+- Add batch spawn API (2.1x faster) and remove unsafe_fastpath (#4) ([391e5ed](https://github.com/madmax983/skesis/commit/391e5ed6b57d2174b85e0fc168de39fa6231a409))
 ## [0.1.0] - 2026-03-26
 
 ### Archetype
