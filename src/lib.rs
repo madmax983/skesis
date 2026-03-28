@@ -27,6 +27,7 @@
 
 mod app;
 mod archetype;
+mod bundle;
 /// Anchor+delta change detection internals.
 pub mod change;
 mod column;
@@ -47,6 +48,7 @@ mod world;
 
 pub use app::App;
 pub use archetype::{Archetype, ArchetypeId, ComponentSet};
+pub use bundle::SpawnBundle;
 pub use change::ChangeHistory;
 pub use command::CommandRecorder;
 pub use component::Component;

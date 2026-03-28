@@ -96,12 +96,6 @@ Benchmarked against Bevy ECS 0.17 on identical workloads (1k entities):
 | `query_pair_uncached` | 1.1 us | **1.7x faster** |
 | `query_optional` | 911 ns | **1.4x faster** |
 
-## Feature Flags
-
-| Flag | Description |
-|------|-------------|
-| `unsafe_fastpath` | Unchecked pointer loops in hot-path iteration |
-
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.

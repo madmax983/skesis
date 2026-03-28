@@ -117,6 +117,8 @@ pub struct World {
     sparse_types: HashSet<TypeId>,
     get_component_mut_cache: GetComponentMutCache,
     get_component_mut_zero_generation_cache: GetComponentMutZeroGenerationCache,
+    /// Cache: bundle `TypeId` → target `ArchetypeId` for `spawn_with` fast path.
+    bundle_archetype_cache: Vec<(TypeId, ArchetypeId)>,
 }
 
 /// Precomputed archetype matches for pair queries.
@@ -468,37 +470,17 @@ impl<'w, A: Component, B: Component> BorrowedPairQueryPlan<'w, A, B> {
             let a_ptr = chunk.a_ptr.as_ptr();
             let b_ptr = chunk.b_ptr.as_ptr();
 
-            #[cfg(feature = "unsafe_fastpath")]
-            {
-                for index in 0..len {
-                    // SAFETY:
-                    // - `index` is bounded by `len`, which matches all slice lengths.
-                    // - Pointers come from valid borrowed-plan chunks and remain valid while
-                    //   `assert_fresh` holds.
-                    let entity = unsafe { *entities_ptr.add(index) };
-                    // SAFETY: see block comment above.
-                    let a = unsafe { &*a_ptr.add(index) };
-                    // SAFETY: see block comment above.
-                    let b = unsafe { &*b_ptr.add(index) };
-                    f(entity, a, b);
-                }
-            }
+            // SAFETY:
+            // - Chunks are created from valid slice backing pointers in `plan_query_pair_borrowed`.
+            // - `assert_fresh` guarantees no structural world mutation since plan creation.
+            let entities: &'w [Entity] = unsafe { std::slice::from_raw_parts(entities_ptr, len) };
+            // SAFETY: same invariants as above.
+            let components_a: &'w [A] = unsafe { std::slice::from_raw_parts(a_ptr, len) };
+            // SAFETY: same invariants as above.
+            let components_b: &'w [B] = unsafe { std::slice::from_raw_parts(b_ptr, len) };
 
-            #[cfg(not(feature = "unsafe_fastpath"))]
-            {
-                // SAFETY:
-                // - Chunks are created from valid slice backing pointers in `plan_query_pair_borrowed`.
-                // - `assert_fresh` guarantees no structural world mutation since plan creation.
-                let entities: &'w [Entity] =
-                    unsafe { std::slice::from_raw_parts(entities_ptr, len) };
-                // SAFETY: same invariants as above.
-                let components_a: &'w [A] = unsafe { std::slice::from_raw_parts(a_ptr, len) };
-                // SAFETY: same invariants as above.
-                let components_b: &'w [B] = unsafe { std::slice::from_raw_parts(b_ptr, len) };
-
-                for index in 0..len {
-                    f(entities[index], &components_a[index], &components_b[index]);
-                }
+            for index in 0..len {
+                f(entities[index], &components_a[index], &components_b[index]);
             }
         }
     }
@@ -516,41 +498,21 @@ impl<'w, A: Component, B: Component> BorrowedPairQueryPlan<'w, A, B> {
             let a_ptr = chunk.a_ptr.as_ptr();
             let b_ptr = chunk.b_ptr.as_ptr();
 
-            #[cfg(feature = "unsafe_fastpath")]
-            {
-                for index in 0..len {
-                    // SAFETY:
-                    // - `index` is bounded by `len`, which matches all slice lengths.
-                    // - Pointers come from valid borrowed-plan chunks and remain valid while
-                    //   `assert_fresh` holds.
-                    let entity_index = unsafe { *indices_ptr.add(index) };
-                    // SAFETY: see block comment above.
-                    let a = unsafe { &*a_ptr.add(index) };
-                    // SAFETY: see block comment above.
-                    let b = unsafe { &*b_ptr.add(index) };
-                    f(entity_index, a, b);
-                }
-            }
+            // SAFETY:
+            // - Chunks are created from valid slice backing pointers in `plan_query_pair_borrowed`.
+            // - `assert_fresh` guarantees no structural world mutation since plan creation.
+            let entity_indices: &'w [u32] = unsafe { std::slice::from_raw_parts(indices_ptr, len) };
+            // SAFETY: same invariants as above.
+            let components_a: &'w [A] = unsafe { std::slice::from_raw_parts(a_ptr, len) };
+            // SAFETY: same invariants as above.
+            let components_b: &'w [B] = unsafe { std::slice::from_raw_parts(b_ptr, len) };
 
-            #[cfg(not(feature = "unsafe_fastpath"))]
-            {
-                // SAFETY:
-                // - Chunks are created from valid slice backing pointers in `plan_query_pair_borrowed`.
-                // - `assert_fresh` guarantees no structural world mutation since plan creation.
-                let entity_indices: &'w [u32] =
-                    unsafe { std::slice::from_raw_parts(indices_ptr, len) };
-                // SAFETY: same invariants as above.
-                let components_a: &'w [A] = unsafe { std::slice::from_raw_parts(a_ptr, len) };
-                // SAFETY: same invariants as above.
-                let components_b: &'w [B] = unsafe { std::slice::from_raw_parts(b_ptr, len) };
-
-                for index in 0..len {
-                    f(
-                        entity_indices[index],
-                        &components_a[index],
-                        &components_b[index],
-                    );
-                }
+            for index in 0..len {
+                f(
+                    entity_indices[index],
+                    &components_a[index],
+                    &components_b[index],
+                );
             }
         }
     }
@@ -881,6 +843,7 @@ impl World {
                 contiguous_prefix_len: 0,
                 contiguous_covers_tail: false,
             },
+            bundle_archetype_cache: Vec::new(),
         };
 
         // Create empty archetype for entities with no components
@@ -956,6 +919,33 @@ impl World {
             let ptr = (component as *const T).cast::<u8>();
             for observer in observers {
                 observer(entity, ptr);
+            }
+        }
+    }
+
+    /// Type-erased version of `fire_on_add` for bundle spawning.
+    ///
+    /// Uses the raw column bytes + stride to compute the component pointer
+    /// without needing a generic type parameter.
+    fn fire_on_add_by_type_id(
+        &self,
+        type_id: &TypeId,
+        entity: Entity,
+        arch_id: ArchetypeId,
+        row: usize,
+    ) {
+        if let Some(observers) = self.on_add_observers.get(type_id)
+            && let Some(column) = self.archetypes[arch_id.0 as usize].component_column(type_id)
+        {
+            let bytes = column.as_bytes();
+            let stride = column.element_stride();
+            if stride > 0 && row * stride < bytes.len() {
+                // SAFETY: row is within bounds (just inserted), stride matches element size,
+                // and the pointer is into valid column backing storage.
+                let ptr = unsafe { bytes.as_ptr().add(row * stride) };
+                for observer in observers {
+                    observer(entity, ptr);
+                }
             }
         }
     }
@@ -1417,6 +1407,95 @@ impl World {
         entity
     }
 
+    /// Spawn a new entity with a bundle of components in a single operation.
+    ///
+    /// Places the entity directly into the target archetype, avoiding the
+    /// archetype migration chain that sequential `add_component` calls cause.
+    ///
+    /// ```
+    /// use skesis::World;
+    ///
+    /// struct Position { x: f32, y: f32 }
+    /// struct Velocity { dx: f32, dy: f32 }
+    ///
+    /// let mut world = World::new();
+    /// let entity = world.spawn_with((
+    ///     Position { x: 0.0, y: 0.0 },
+    ///     Velocity { dx: 1.0, dy: 2.0 },
+    /// ));
+    /// ```
+    pub fn spawn_with<B: crate::bundle::SpawnBundle>(&mut self, bundle: B) -> Entity {
+        // Allocate entity index (reuse freed slots or bump counter).
+        let index = if let Some(free_index) = self.free_indices.pop() {
+            free_index
+        } else {
+            let index = self.next_entity_index;
+            self.next_entity_index += 1;
+            index
+        };
+
+        if index as usize >= self.entity_generations.len() {
+            self.entity_generations.resize(index as usize + 1, 0);
+        }
+        if index as usize >= self.entity_locations.len() {
+            self.entity_locations.resize(index as usize + 1, None);
+        }
+
+        let generation = self.entity_generations[index as usize];
+        if generation != 0 {
+            self.all_generations_zero = false;
+        }
+        let entity = Entity::new(index, generation);
+
+        // Fast path: look up cached bundle → archetype mapping.
+        let bundle_type_id = TypeId::of::<B>();
+        let arch_id = if let Some(&(_, cached_id)) = self
+            .bundle_archetype_cache
+            .iter()
+            .find(|&&(tid, _)| tid == bundle_type_id)
+        {
+            cached_id
+        } else {
+            // Cold path: register column factories, build component set, create archetype.
+            B::register(self);
+            let component_set = B::component_set();
+            let id = self.get_or_create_archetype(component_set);
+            self.bundle_archetype_cache.push((bundle_type_id, id));
+            id
+        };
+
+        // Push entity + all components directly into the target archetype.
+        let archetype = &mut self.archetypes[arch_id.0 as usize];
+        let row = archetype.len();
+        archetype.track_entity(entity);
+        bundle.push_components(archetype);
+
+        // Update bookkeeping.
+        self.entity_locations[index as usize] = Some((arch_id, row));
+        self.max_nonempty_entity_index = Some(
+            self.max_nonempty_entity_index
+                .map_or(index, |current_max| current_max.max(index)),
+        );
+        self.componentless_tail_start = self
+            .max_nonempty_entity_index
+            .map_or(0, |max_nonempty| max_nonempty + 1);
+        self.bump_structural_version();
+
+        // Bump change versions (zero-allocation iteration).
+        B::for_each_type_id(|type_id| {
+            self.change_history.bump_version_by_type_id(&type_id);
+        });
+        // Fire on_add observers after all components are in place, so
+        // observers can read sibling components from the bundle.
+        if self.on_add_observer_count > 0 {
+            B::for_each_type_id(|type_id| {
+                self.fire_on_add_by_type_id(&type_id, entity, arch_id, row);
+            });
+        }
+
+        entity
+    }
+
     /// Despawn an entity and all its components.
     pub fn despawn(&mut self, entity: Entity) -> bool {
         let index = entity.index() as usize;
@@ -1852,31 +1931,6 @@ impl World {
                 .components::<B>()
                 .expect("archetype contains component set but missing B column");
 
-            #[cfg(feature = "unsafe_fastpath")]
-            {
-                let len = entities.len();
-                debug_assert_eq!(len, components_a.len());
-                debug_assert_eq!(len, components_b.len());
-
-                let entities_ptr = entities.as_ptr();
-                let a_ptr = components_a.as_ptr();
-                let b_ptr = components_b.as_ptr();
-
-                for index in 0..len {
-                    // SAFETY:
-                    // - `index` is always in-bounds for all three slices due to loop bound `len`.
-                    // - Pointers come from valid slice backing storage and remain valid for loop scope.
-                    // - We only create shared references for `A` and `B`, so aliasing rules are preserved.
-                    let entity = unsafe { *entities_ptr.add(index) };
-                    // SAFETY: see block comment above; `index < len`.
-                    let a = unsafe { &*a_ptr.add(index) };
-                    // SAFETY: see block comment above; `index < len`.
-                    let b = unsafe { &*b_ptr.add(index) };
-                    f(entity, a, b);
-                }
-            }
-
-            #[cfg(not(feature = "unsafe_fastpath"))]
             for index in 0..entities.len() {
                 f(entities[index], &components_a[index], &components_b[index]);
             }
@@ -1922,27 +1976,6 @@ impl World {
                 .entities_and_components_mut::<T>()
                 .expect("archetype contains component set but missing column");
 
-            #[cfg(feature = "unsafe_fastpath")]
-            {
-                let len = entities.len();
-                debug_assert_eq!(len, components.len());
-
-                let entities_ptr = entities.as_ptr();
-                let components_ptr = components.as_mut_ptr();
-
-                for index in 0..len {
-                    // SAFETY:
-                    // - `index` is always in-bounds due to loop bound `len`.
-                    // - `components_ptr` originates from a unique mutable slice, so each element
-                    //   access is disjoint and upholds mutable aliasing guarantees.
-                    let entity = unsafe { *entities_ptr.add(index) };
-                    // SAFETY: see block comment above; `index < len`.
-                    let component = unsafe { &mut *components_ptr.add(index) };
-                    f(entity, component);
-                }
-            }
-
-            #[cfg(not(feature = "unsafe_fastpath"))]
             for index in 0..entities.len() {
                 f(entities[index], &mut components[index]);
             }
@@ -2343,30 +2376,6 @@ impl World {
                 .components::<B>()
                 .expect("query plan archetype missing B column");
 
-            #[cfg(feature = "unsafe_fastpath")]
-            {
-                let len = entities.len();
-                debug_assert_eq!(len, components_a.len());
-                debug_assert_eq!(len, components_b.len());
-
-                let entities_ptr = entities.as_ptr();
-                let a_ptr = components_a.as_ptr();
-                let b_ptr = components_b.as_ptr();
-
-                for index in 0..len {
-                    // SAFETY:
-                    // - `index` is bounded by `len`, which matches all slice lengths.
-                    // - Pointers come from valid slices and remain valid for this scope.
-                    let entity = unsafe { *entities_ptr.add(index) };
-                    // SAFETY: see block comment above.
-                    let a = unsafe { &*a_ptr.add(index) };
-                    // SAFETY: see block comment above.
-                    let b = unsafe { &*b_ptr.add(index) };
-                    f(entity, a, b);
-                }
-            }
-
-            #[cfg(not(feature = "unsafe_fastpath"))]
             for index in 0..entities.len() {
                 f(entities[index], &components_a[index], &components_b[index]);
             }
@@ -2411,26 +2420,6 @@ impl World {
                 .entities_and_components_mut::<T>()
                 .expect("query plan archetype missing mutable column");
 
-            #[cfg(feature = "unsafe_fastpath")]
-            {
-                let len = entities.len();
-                debug_assert_eq!(len, components.len());
-
-                let entities_ptr = entities.as_ptr();
-                let components_ptr = components.as_mut_ptr();
-
-                for index in 0..len {
-                    // SAFETY:
-                    // - `index` is bounded by `len` for both slices.
-                    // - `components_ptr` comes from unique mutable slice; each index is disjoint.
-                    let entity = unsafe { *entities_ptr.add(index) };
-                    // SAFETY: see block comment above.
-                    let component = unsafe { &mut *components_ptr.add(index) };
-                    f(entity, component);
-                }
-            }
-
-            #[cfg(not(feature = "unsafe_fastpath"))]
             for index in 0..entities.len() {
                 f(entities[index], &mut components[index]);
             }
@@ -2802,9 +2791,10 @@ impl World {
 
         // Write the value.
         if let Some(columns) = self.archetypes[arch_id.0 as usize].components_mut::<T>()
-            && let Some(slot) = columns.get_mut(arch_index) {
-                *slot = component;
-            }
+            && let Some(slot) = columns.get_mut(arch_index)
+        {
+            *slot = component;
+        }
 
         // Fire on_set observers with the new value.
         if let Some(comp) = self.archetypes[arch_id.0 as usize]
@@ -3291,6 +3281,7 @@ impl World {
         self.archetypes.clear();
         self.archetype_map.clear();
         self.single_component_archetypes.clear();
+        self.bundle_archetype_cache.clear();
         self.add_component_transitions.clear();
         self.remove_component_transitions.clear();
         self.entity_locations.clear();

@@ -173,7 +173,7 @@ impl Archetype {
 
     /// Track a new entity row, returning the dense index of the inserted row.
     #[inline(always)]
-    fn track_entity(&mut self, entity: Entity) -> usize {
+    pub(crate) fn track_entity(&mut self, entity: Entity) -> usize {
         let row = self.entities.len();
         self.entities.push(entity);
         // Denormalized: entity_indices stores entity.index() separately for
@@ -240,6 +240,23 @@ impl Archetype {
         typed.push(component);
     }
 
+    /// Push a single typed component value into the corresponding column.
+    ///
+    /// The archetype must already have a `TypedColumn<T>` for this type.
+    /// Call `track_entity` before this to register the entity row.
+    #[inline]
+    pub(crate) fn push_typed_component<T: 'static + Send + Sync>(&mut self, component: T) {
+        let idx = self
+            .find_column(&TypeId::of::<T>())
+            .expect("archetype missing typed column for bundle insertion");
+        let typed = self.components[idx]
+            .1
+            .as_any_mut()
+            .downcast_mut::<TypedColumn<T>>()
+            .expect("typed column downcast failed during bundle insertion");
+        typed.push(component);
+    }
+
     /// Remove an entity at the given index.
     ///
     /// Uses swap-remove for O(1) removal.
@@ -250,7 +267,10 @@ impl Archetype {
 
         let mut components = Vec::with_capacity(self.components.len());
         for (type_id, column) in &mut self.components {
-            debug_assert!(column.len() > index, "column length mismatch while removing entity from archetype");
+            debug_assert!(
+                column.len() > index,
+                "column length mismatch while removing entity from archetype"
+            );
             components.push((*type_id, column.swap_remove_boxed(index)));
         }
 
@@ -266,7 +286,10 @@ impl Archetype {
         }
 
         for (_, column) in &mut self.components {
-            debug_assert!(column.len() > index, "column length mismatch while removing entity from archetype");
+            debug_assert!(
+                column.len() > index,
+                "column length mismatch while removing entity from archetype"
+            );
             column.swap_remove_drop(index);
         }
 
@@ -345,7 +368,8 @@ impl Archetype {
         let src_idx = self
             .find_column(&removed_type_id)
             .expect("source archetype missing removed component column");
-        let removed_typed = self.components[src_idx].1
+        let removed_typed = self.components[src_idx]
+            .1
             .as_any_mut()
             .downcast_mut::<TypedColumn<T>>()
             .expect("removed component column downcast failed");
@@ -391,14 +415,20 @@ impl Archetype {
     /// Get components of a specific type.
     pub fn components<T: 'static + Send + Sync>(&self) -> Option<&[T]> {
         let idx = self.find_column(&TypeId::of::<T>())?;
-        let typed = self.components[idx].1.as_any().downcast_ref::<TypedColumn<T>>()?;
+        let typed = self.components[idx]
+            .1
+            .as_any()
+            .downcast_ref::<TypedColumn<T>>()?;
         Some(typed.as_slice())
     }
 
     /// Get mutable components of a specific type.
     pub fn components_mut<T: 'static + Send + Sync>(&mut self) -> Option<&mut [T]> {
         let idx = self.find_column(&TypeId::of::<T>())?;
-        let typed = self.components[idx].1.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
+        let typed = self.components[idx]
+            .1
+            .as_any_mut()
+            .downcast_mut::<TypedColumn<T>>()?;
         Some(typed.as_mut_slice())
     }
 
@@ -408,7 +438,10 @@ impl Archetype {
     ) -> Option<(&[Entity], &mut [T])> {
         let entities = self.entities.as_slice();
         let idx = self.find_column(&TypeId::of::<T>())?;
-        let typed = self.components[idx].1.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
+        let typed = self.components[idx]
+            .1
+            .as_any_mut()
+            .downcast_mut::<TypedColumn<T>>()?;
         Some((entities, typed.as_mut_slice()))
     }
 
@@ -418,7 +451,10 @@ impl Archetype {
     ) -> Option<(&[u32], &mut [T])> {
         let entity_indices = self.entity_indices.as_slice();
         let idx = self.find_column(&TypeId::of::<T>())?;
-        let typed = self.components[idx].1.as_any_mut().downcast_mut::<TypedColumn<T>>()?;
+        let typed = self.components[idx]
+            .1
+            .as_any_mut()
+            .downcast_mut::<TypedColumn<T>>()?;
         Some((entity_indices, typed.as_mut_slice()))
     }
 }

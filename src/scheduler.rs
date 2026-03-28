@@ -108,7 +108,9 @@ fn topological_sort(systems: &[SystemDescriptor]) -> Vec<usize> {
     // Kahn's algorithm with registration-order tiebreaking.
     let mut queue: VecDeque<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
     // Sort by registration index for deterministic output.
-    queue.make_contiguous().sort_by_key(|&i| systems[i].registration_index());
+    queue
+        .make_contiguous()
+        .sort_by_key(|&i| systems[i].registration_index());
 
     let mut result = Vec::with_capacity(n);
 
@@ -120,7 +122,8 @@ fn topological_sort(systems: &[SystemDescriptor]) -> Vec<usize> {
             if in_degree[neighbor] == 0 {
                 // Insert sorted by registration index for determinism.
                 let reg_idx = systems[neighbor].registration_index();
-                let pos = queue.make_contiguous()
+                let pos = queue
+                    .make_contiguous()
                     .binary_search_by_key(&reg_idx, |&i| systems[i].registration_index())
                     .unwrap_or_else(|pos| pos);
                 queue.insert(pos, neighbor);
