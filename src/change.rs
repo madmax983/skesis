@@ -61,7 +61,10 @@ pub(crate) fn any_bytes_differ(before: &[u8], after: &[u8]) -> bool {
 
     // Byte-level tail comparison.
     let tail_start = word_count * 8;
-    before[tail_start..].iter().zip(after[tail_start..].iter()).any(|(a, b)| a != b)
+    before[tail_start..]
+        .iter()
+        .zip(after[tail_start..].iter())
+        .any(|(a, b)| a != b)
 }
 
 /// Build a bitset (one bit per element of size `stride`) marking which elements differ.
@@ -134,8 +137,8 @@ unsafe fn diff_to_bitset_avx2_stride8(
     bits: &mut [u64],
 ) {
     use std::arch::x86_64::{
-        __m256i, _mm256_castsi256_pd, _mm256_cmpeq_epi64, _mm256_loadu_si256,
-        _mm256_movemask_pd, _mm256_setzero_si256, _mm256_xor_si256,
+        __m256i, _mm256_castsi256_pd, _mm256_cmpeq_epi64, _mm256_loadu_si256, _mm256_movemask_pd,
+        _mm256_setzero_si256, _mm256_xor_si256,
     };
 
     // SAFETY: Caller guarantees valid aligned slices of sufficient length,
@@ -178,8 +181,7 @@ unsafe fn diff_to_bitset_avx2_stride8(
         let tail_start = chunks * 4;
         let before_words =
             std::slice::from_raw_parts(before.as_ptr().cast::<u64>(), before.len() / 8);
-        let after_words =
-            std::slice::from_raw_parts(after.as_ptr().cast::<u64>(), after.len() / 8);
+        let after_words = std::slice::from_raw_parts(after.as_ptr().cast::<u64>(), after.len() / 8);
 
         for i in tail_start..element_count {
             if before_words[i] != after_words[i] {
@@ -292,9 +294,7 @@ impl ChangeHistory {
 
     /// Register a component type for change tracking.
     pub fn track<T: 'static>(&mut self) {
-        self.trackers
-            .entry(TypeId::of::<T>())
-            .or_default();
+        self.trackers.entry(TypeId::of::<T>()).or_default();
     }
 
     /// Check if a component type is tracked.
@@ -327,7 +327,6 @@ impl ChangeHistory {
     pub(crate) fn tracker<T: 'static>(&self) -> Option<&ChangeTracker> {
         self.trackers.get(&TypeId::of::<T>())
     }
-
 }
 
 impl Default for ChangeHistory {
