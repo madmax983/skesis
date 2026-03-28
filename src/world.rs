@@ -3063,6 +3063,65 @@ impl World {
         self.resources.get_mut::<T>()
     }
 
+    /// Check if a typed resource exists.
+    pub fn has_resource<T: 'static + Send + Sync>(&self) -> bool {
+        self.resources.has::<T>()
+    }
+
+    /// Remove a typed resource, returning the owned value.
+    pub fn remove_resource<T: 'static + Send + Sync>(&mut self) -> Option<T> {
+        self.resources.remove::<T>()
+    }
+
+    /// Temporarily remove a resource, giving the closure `(&mut World, &mut T)`.
+    ///
+    /// The resource is physically moved out of the World for the duration of the
+    /// closure, then moved back in. This allows simultaneous mutable access to both
+    /// the resource and the World's entity/component storage — the key pattern for
+    /// ECS systems that need to iterate components while mutating a resource (e.g.,
+    /// polling reactive signals into a Scene).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource does not exist.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use skesis::World;
+    ///
+    /// struct Score(u32);
+    /// struct Health(u32);
+    ///
+    /// let mut world = World::new();
+    /// world.insert_resource(Score(0));
+    /// let entity = world.spawn_empty();
+    /// world.add_component(entity, Health(100));
+    ///
+    /// // Iterate components while mutating a resource — no collect() needed
+    /// world.resource_scope::<Score, _>(|world, score| {
+    ///     world.for_each_mut::<Health>(|_entity, health| {
+    ///         score.0 += health.0;
+    ///     });
+    /// });
+    ///
+    /// assert_eq!(world.get_resource::<Score>().unwrap().0, 100);
+    /// ```
+    pub fn resource_scope<T: 'static + Send + Sync, R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &mut T) -> R,
+    ) -> R {
+        let mut resource = self
+            .resources
+            .remove::<T>()
+            .unwrap_or_else(|| panic!("resource_scope: resource {} not found", std::any::type_name::<T>()));
+
+        let result = f(self, &mut resource);
+
+        self.resources.insert(resource);
+        result
+    }
+
     /// Begin a new stage deferred-command merge scope.
     pub fn begin_stage_commands(&mut self) {
         self.commands.begin_stage();
@@ -5816,5 +5875,106 @@ mod tests {
         world.register_sparse::<Debuff>();
         assert!(world.is_sparse::<Debuff>());
         assert!(!world.is_sparse::<Position>()); // not registered as sparse
+    }
+
+    // --- Resource management tests ---
+
+    #[derive(Debug, PartialEq)]
+    struct ResourceScore(u32);
+
+    #[test]
+    fn has_resource_detects_presence() {
+        let mut world = World::new();
+        assert!(!world.has_resource::<ResourceScore>());
+        world.insert_resource(ResourceScore(0));
+        assert!(world.has_resource::<ResourceScore>());
+    }
+
+    #[test]
+    fn remove_resource_returns_owned_value() {
+        let mut world = World::new();
+        world.insert_resource(ResourceScore(42));
+
+        let removed = world.remove_resource::<ResourceScore>();
+        assert_eq!(removed, Some(ResourceScore(42)));
+        assert!(!world.has_resource::<ResourceScore>());
+    }
+
+    #[test]
+    fn remove_resource_missing_returns_none() {
+        let mut world = World::new();
+        assert_eq!(world.remove_resource::<ResourceScore>(), None);
+    }
+
+    #[test]
+    fn resource_scope_allows_simultaneous_access() {
+        let mut world = World::new();
+        world.insert_resource(ResourceScore(0));
+
+        let e1 = world.spawn_empty();
+        let e2 = world.spawn_empty();
+        world.add_component(e1, Position { x: 10.0, y: 0.0 });
+        world.add_component(e2, Position { x: 25.0, y: 0.0 });
+
+        // Iterate components while mutating a resource — no Vec collect needed
+        world.resource_scope::<ResourceScore, _>(|world, score| {
+            world.for_each_mut::<Position>(|_entity, pos| {
+                score.0 += pos.x as u32;
+            });
+        });
+
+        assert_eq!(world.get_resource::<ResourceScore>().unwrap().0, 35);
+    }
+
+    #[test]
+    fn resource_scope_restores_resource_on_return() {
+        let mut world = World::new();
+        world.insert_resource(ResourceScore(100));
+
+        let result = world.resource_scope::<ResourceScore, u32>(|_world, score| {
+            score.0 += 1;
+            score.0
+        });
+
+        assert_eq!(result, 101);
+        assert_eq!(world.get_resource::<ResourceScore>().unwrap().0, 101);
+    }
+
+    #[test]
+    #[should_panic(expected = "resource_scope: resource")]
+    fn resource_scope_panics_on_missing_resource() {
+        let mut world = World::new();
+        world.resource_scope::<ResourceScore, _>(|_world, _score| {});
+    }
+
+    #[test]
+    fn resource_scope_with_query_pair() {
+        let mut world = World::new();
+
+        #[derive(Debug, Clone)]
+        struct SceneData(Vec<(u32, u32)>);
+        #[derive(Debug, Clone)]
+        struct Velocity(u32);
+
+        world.insert_resource(SceneData(Vec::new()));
+
+        let e1 = world.spawn_empty();
+        let e2 = world.spawn_empty();
+        world.add_component(e1, Position { x: 1.0, y: 2.0 });
+        world.add_component(e1, Velocity(100));
+        world.add_component(e2, Position { x: 3.0, y: 4.0 });
+        world.add_component(e2, Velocity(200));
+
+        // Simultaneous pair query + resource mutation
+        world.resource_scope::<SceneData, _>(|world, scene| {
+            world.for_each_pair::<Position, Velocity>(|_e, pos, vel| {
+                scene.0.push((pos.x as u32, vel.0));
+            });
+        });
+
+        let scene = world.get_resource::<SceneData>().unwrap();
+        assert_eq!(scene.0.len(), 2);
+        assert!(scene.0.contains(&(1, 100)));
+        assert!(scene.0.contains(&(3, 200)));
     }
 }

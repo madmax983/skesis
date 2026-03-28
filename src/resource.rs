@@ -31,6 +31,19 @@ impl ResourceStore {
             .get_mut(&TypeId::of::<T>())?
             .downcast_mut::<T>()
     }
+
+    /// Check if a resource of the given type exists.
+    pub fn has<T: 'static + Send + Sync>(&self) -> bool {
+        self.resources.contains_key(&TypeId::of::<T>())
+    }
+
+    /// Remove a resource by type, returning the owned value if it existed.
+    pub fn remove<T: 'static + Send + Sync>(&mut self) -> Option<T> {
+        self.resources
+            .remove(&TypeId::of::<T>())
+            .and_then(|boxed| boxed.downcast::<T>().ok())
+            .map(|boxed| *boxed)
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +95,30 @@ mod tests {
         score.0 = 7;
 
         assert_eq!(resources.get::<Score>(), Some(&Score(7)));
+    }
+
+    #[test]
+    fn has_returns_true_for_existing_resource() {
+        let mut resources = ResourceStore::new();
+        resources.insert(Score(42));
+        assert!(resources.has::<Score>());
+        assert!(!resources.has::<Time>());
+    }
+
+    #[test]
+    fn remove_returns_owned_value() {
+        let mut resources = ResourceStore::new();
+        resources.insert(Score(99));
+
+        let removed = resources.remove::<Score>();
+        assert_eq!(removed, Some(Score(99)));
+        assert!(!resources.has::<Score>());
+        assert!(resources.get::<Score>().is_none());
+    }
+
+    #[test]
+    fn remove_missing_returns_none() {
+        let mut resources = ResourceStore::new();
+        assert_eq!(resources.remove::<Score>(), None);
     }
 }
