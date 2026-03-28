@@ -1965,6 +1965,30 @@ impl World {
         }
     }
 
+    /// Iterate entities with components A and B, giving `&A` (read) and `&mut B` (write).
+    ///
+    /// Uses cache-friendly archetype-level column iteration. A and B must be different types.
+    /// This is the key primitive for systems that need to read one component while mutating another.
+    pub fn for_each_pair_second_mut<A: Component, B: Component>(
+        &mut self,
+        mut f: impl FnMut(Entity, &A, &mut B),
+    ) {
+        for arch in &mut self.archetypes {
+            let component_set = arch.component_set();
+            if !component_set.contains::<A>() || !component_set.contains::<B>() {
+                continue;
+            }
+
+            let (entities, col_a, col_b) = arch
+                .components_ref_and_mut::<A, B>()
+                .expect("archetype contains component set but missing column");
+
+            for index in 0..entities.len() {
+                f(entities[index], &col_a[index], &mut col_b[index]);
+            }
+        }
+    }
+
     /// Run a callback for each entity that has the component type.
     pub fn for_each_mut<T: Component>(&mut self, mut f: impl FnMut(Entity, &mut T)) {
         for arch in &mut self.archetypes {
@@ -3111,10 +3135,12 @@ impl World {
         &mut self,
         f: impl FnOnce(&mut Self, &mut T) -> R,
     ) -> R {
-        let mut resource = self
-            .resources
-            .remove::<T>()
-            .unwrap_or_else(|| panic!("resource_scope: resource {} not found", std::any::type_name::<T>()));
+        let mut resource = self.resources.remove::<T>().unwrap_or_else(|| {
+            panic!(
+                "resource_scope: resource {} not found",
+                std::any::type_name::<T>()
+            )
+        });
 
         let result = f(self, &mut resource);
 

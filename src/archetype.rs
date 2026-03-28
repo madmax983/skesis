@@ -432,6 +432,47 @@ impl Archetype {
         Some(typed.as_mut_slice())
     }
 
+    /// Get entities, one read-only column, and one mutable column simultaneously.
+    ///
+    /// # Safety contract
+    ///
+    /// `A` and `B` must be different types (`TypeId::of::<A>() != TypeId::of::<B>()`).
+    /// This is enforced at runtime via a debug_assert. The two columns occupy
+    /// disjoint memory (separate `Box<dyn ErasedColumn>` at different indices),
+    /// so borrowing them with different mutability is sound.
+    pub fn components_ref_and_mut<A: 'static + Send + Sync, B: 'static + Send + Sync>(
+        &mut self,
+    ) -> Option<(&[Entity], &[A], &mut [B])> {
+        debug_assert_ne!(
+            TypeId::of::<A>(),
+            TypeId::of::<B>(),
+            "components_ref_and_mut requires distinct types"
+        );
+        let idx_a = self.find_column(&TypeId::of::<A>())?;
+        let idx_b = self.find_column(&TypeId::of::<B>())?;
+
+        // SAFETY: idx_a != idx_b (different TypeIds → different sorted positions).
+        // We obtain independent raw pointers to different Vec elements, then
+        // construct non-overlapping references.
+        let entities = self.entities.as_slice();
+        let ptr = self.components.as_mut_ptr();
+        let col_a = unsafe { &*ptr.add(idx_a) };
+        let col_b = unsafe { &mut *ptr.add(idx_b) };
+
+        let slice_a = col_a
+            .1
+            .as_any()
+            .downcast_ref::<TypedColumn<A>>()?
+            .as_slice();
+        let slice_b = col_b
+            .1
+            .as_any_mut()
+            .downcast_mut::<TypedColumn<B>>()?
+            .as_mut_slice();
+
+        Some((entities, slice_a, slice_b))
+    }
+
     /// Get entity slice and mutable component slice for a specific type.
     pub fn entities_and_components_mut<T: 'static + Send + Sync>(
         &mut self,
