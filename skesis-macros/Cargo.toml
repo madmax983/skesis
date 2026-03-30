@@ -1,0 +1,15 @@
+[package]
+name = "skesis-macros"
+version = "0.2.0"
+edition = "2024"
+description = "Proc macros for the skesis ECS — #[system] attribute for parameter extraction"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/madmax983/skesis"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

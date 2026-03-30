@@ -44,6 +44,10 @@ mod snapshot;
 mod sparse_set;
 mod system;
 mod tuple_query;
+/// System parameter types (Res, ResMut, Query, Commands, Local, Events).
+pub mod param;
+/// Raw access to World internals for system parameter extraction.
+pub mod unsafe_cell;
 mod world;
 
 pub use app::App;
@@ -60,6 +64,11 @@ pub use resource::ResourceStore;
 pub use scheduler::plan_stage;
 pub use snapshot::WorldSnapshot;
 pub use sparse_set::SparseSet;
-pub use system::{ParallelSystemFn, SystemDescriptor, SystemFn};
+pub use system::{ParallelSystemFn, SystemAccess, SystemDescriptor, SystemFn};
+pub use param::{Commands, EventReader, EventWriter, Local, Res, ResMut, SystemParam, SystemState};
+pub use unsafe_cell::UnsafeWorldCell;
 pub use tuple_query::QueryTuple;
-pub use world::{BorrowedMutQueryPlan, BorrowedPairQueryPlan, MutQueryPlan, PairQueryPlan, World};
+pub use world::{
+    BorrowedMutQueryPlan, BorrowedPairQueryPlan, ComponentView, ComponentViewMut, MutQueryPlan,
+    PairQueryPlan, World,
+};

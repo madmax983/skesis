@@ -9,11 +9,16 @@ keywords = ["ecs", "gamedev", "entity-component", "change-detection"]
 categories = ["game-development", "data-structures"]
 readme = "README.md"
 
+[workspace]
+members = [".", "skesis-macros"]
+
 [features]
-default = []
+default = ["macros"]
+macros = ["dep:skesis-macros"]
 
 [dependencies]
 rayon = "1"
+skesis-macros = { path = "skesis-macros", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

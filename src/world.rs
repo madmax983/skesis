@@ -83,6 +83,92 @@ thread_local! {
     };
 }
 
+/// Read-only view over archetype component storage.
+///
+/// Created by [`World::split_resource_ref`]. Enables iterating components
+/// while the caller holds a mutable resource reference.
+pub struct ComponentView<'w> {
+    archetypes: &'w [Archetype],
+}
+
+impl<'w> ComponentView<'w> {
+    /// Iterate entity pairs with two components (read-only).
+    pub fn for_each_pair<A: Component, B: Component>(&self, mut f: impl FnMut(Entity, &A, &B)) {
+        for arch in self.archetypes {
+            let cs = arch.component_set();
+            if !cs.contains::<A>() || !cs.contains::<B>() {
+                continue;
+            }
+            let entities = arch.entities();
+            let col_a = arch.components::<A>().expect("missing column A");
+            let col_b = arch.components::<B>().expect("missing column B");
+            for i in 0..entities.len() {
+                f(entities[i], &col_a[i], &col_b[i]);
+            }
+        }
+    }
+}
+
+/// Mutable view over archetype component storage.
+///
+/// Created by [`World::split_resource_mut`]. Enables iterating and mutating
+/// components while the caller holds a mutable resource reference.
+pub struct ComponentViewMut<'w> {
+    archetypes: &'w mut [Archetype],
+}
+
+impl<'w> ComponentViewMut<'w> {
+    /// Iterate entity pairs with two components (read-only).
+    pub fn for_each_pair<A: Component, B: Component>(&self, mut f: impl FnMut(Entity, &A, &B)) {
+        for arch in self.archetypes.iter() {
+            let cs = arch.component_set();
+            if !cs.contains::<A>() || !cs.contains::<B>() {
+                continue;
+            }
+            let entities = arch.entities();
+            let col_a = arch.components::<A>().expect("missing column A");
+            let col_b = arch.components::<B>().expect("missing column B");
+            for i in 0..entities.len() {
+                f(entities[i], &col_a[i], &col_b[i]);
+            }
+        }
+    }
+
+    /// Iterate with mutable access to a single component type.
+    pub fn for_each_mut<T: Component>(&mut self, mut f: impl FnMut(Entity, &mut T)) {
+        for arch in self.archetypes.iter_mut() {
+            if !arch.component_set().contains::<T>() {
+                continue;
+            }
+            let (entities, components) = arch
+                .entities_and_components_mut::<T>()
+                .expect("missing column");
+            for i in 0..entities.len() {
+                f(entities[i], &mut components[i]);
+            }
+        }
+    }
+
+    /// Iterate with `&A` (read) and `&mut B` (write) access.
+    pub fn for_each_pair_second_mut<A: Component, B: Component>(
+        &mut self,
+        mut f: impl FnMut(Entity, &A, &mut B),
+    ) {
+        for arch in self.archetypes.iter_mut() {
+            let cs = arch.component_set();
+            if !cs.contains::<A>() || !cs.contains::<B>() {
+                continue;
+            }
+            let (entities, col_a, col_b) = arch
+                .components_ref_and_mut::<A, B>()
+                .expect("missing column");
+            for i in 0..entities.len() {
+                f(entities[i], &col_a[i], &mut col_b[i]);
+            }
+        }
+    }
+}
+
 /// The ECS world.
 pub struct World {
     next_entity_index: u32,
@@ -3146,6 +3232,156 @@ impl World {
 
         self.resources.insert(resource);
         result
+    }
+
+    /// Split the world into a mutable resource reference and a mutable component view.
+    ///
+    /// This is the zero-overhead alternative to [`resource_scope`](World::resource_scope).
+    /// Instead of physically removing/reinserting the resource from the HashMap
+    /// (which allocates and deallocates a Box per call), it uses pointer arithmetic
+    /// to create independent borrows of the `resources` and `archetypes` fields.
+    ///
+    /// Returns `None` if the resource doesn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use skesis::World;
+    ///
+    /// struct Score(u32);
+    /// struct Health(u32);
+    ///
+    /// let mut world = World::new();
+    /// world.insert_resource(Score(0));
+    /// let e = world.spawn_empty();
+    /// world.add_component(e, Health(100));
+    ///
+    /// // Mutate resource while iterating components — zero allocation overhead
+    /// let (score, mut comps) = world.split_resource_mut::<Score>().unwrap();
+    /// comps.for_each_mut::<Health>(|_entity, health| {
+    ///     score.0 += health.0;
+    /// });
+    ///
+    /// assert_eq!(world.get_resource::<Score>().unwrap().0, 100);
+    /// ```
+    pub fn split_resource_mut<T: 'static + Send + Sync>(
+        &mut self,
+    ) -> Option<(&mut T, ComponentViewMut<'_>)> {
+        // SAFETY: `self.resources` and `self.archetypes` are distinct fields of World.
+        // They occupy disjoint memory regions with no internal aliasing.
+        // This is standard struct field splitting, done through raw pointers because
+        // Rust's borrow checker can't express it through `&mut self` alone.
+        let resource_ptr = &mut self.resources as *mut ResourceStore;
+        let archetypes_ptr = &mut self.archetypes as *mut Vec<Archetype>;
+
+        let resource = unsafe { (*resource_ptr).get_mut::<T>()? };
+        let archetypes = unsafe { (*archetypes_ptr).as_mut_slice() };
+
+        Some((resource, ComponentViewMut { archetypes }))
+    }
+
+    /// Split the world into a mutable resource reference and a read-only component view.
+    ///
+    /// Like [`split_resource_mut`](World::split_resource_mut) but the component view
+    /// only supports immutable iteration.
+    pub fn split_resource_ref<T: 'static + Send + Sync>(
+        &mut self,
+    ) -> Option<(&mut T, ComponentView<'_>)> {
+        let resource_ptr = &mut self.resources as *mut ResourceStore;
+
+        let resource = unsafe { (*resource_ptr).get_mut::<T>()? };
+        let archetypes = &self.archetypes[..];
+
+        Some((resource, ComponentView { archetypes }))
+    }
+
+    /// Split the world into two mutable resource references and a component view.
+    ///
+    /// Enables systems that need simultaneous mutable access to two resources
+    /// (e.g., reading Scene while writing into RenderCommands). T1 and T2 must
+    /// be different types.
+    ///
+    /// # Panics
+    ///
+    /// Debug-asserts that T1 and T2 are different types.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use skesis::World;
+    ///
+    /// struct Scene(Vec<u32>);
+    /// struct Output(Vec<u32>);
+    /// struct Tag;
+    ///
+    /// let mut world = World::new();
+    /// world.insert_resource(Scene(vec![1, 2, 3]));
+    /// world.insert_resource(Output(Vec::new()));
+    /// let e = world.spawn_empty();
+    /// world.add_component(e, Tag);
+    ///
+    /// let (scene, output, comps) = world.split_two_resources_mut::<Scene, Output>().unwrap();
+    /// // Write from scene into output while iterating components
+    /// output.0.extend_from_slice(&scene.0);
+    ///
+    /// assert_eq!(world.get_resource::<Output>().unwrap().0, vec![1, 2, 3]);
+    /// ```
+    pub fn split_two_resources_mut<T1: 'static + Send + Sync, T2: 'static + Send + Sync>(
+        &mut self,
+    ) -> Option<(&mut T1, &mut T2, ComponentViewMut<'_>)> {
+        use std::any::TypeId;
+        debug_assert_ne!(
+            TypeId::of::<T1>(),
+            TypeId::of::<T2>(),
+            "split_two_resources_mut requires distinct resource types"
+        );
+
+        // Use get_two_mut to safely derive two &mut references from the same HashMap
+        // in a single iteration pass (avoids stacked borrows violation).
+        let (r1, r2) = self.resources.get_two_mut::<T1, T2>()?;
+
+        // SAFETY: resources and archetypes are distinct struct fields.
+        let archetypes_ptr = &mut self.archetypes as *mut Vec<Archetype>;
+        let archetypes = unsafe { (*archetypes_ptr).as_mut_slice() };
+
+        Some((r1, r2, ComponentViewMut { archetypes }))
+    }
+
+    // ---- Raw field accessors for UnsafeWorldCell ----
+
+    /// Raw immutable access to the resource store.
+    pub(crate) fn resources_raw(&self) -> &ResourceStore {
+        &self.resources
+    }
+
+    /// Raw mutable access to the resource store.
+    pub(crate) fn resources_raw_mut(&mut self) -> &mut ResourceStore {
+        &mut self.resources
+    }
+
+    /// Raw immutable access to the archetype slice.
+    pub(crate) fn archetypes_raw(&self) -> &[Archetype] {
+        &self.archetypes
+    }
+
+    /// Raw mutable access to the archetype slice.
+    pub(crate) fn archetypes_raw_mut(&mut self) -> &mut [Archetype] {
+        &mut self.archetypes
+    }
+
+    /// Raw immutable access to the event store.
+    pub(crate) fn events_raw(&self) -> &EventStore {
+        &self.events
+    }
+
+    /// Raw mutable access to the event store.
+    pub(crate) fn events_raw_mut(&mut self) -> &mut EventStore {
+        &mut self.events
+    }
+
+    /// Raw mutable access to the command store.
+    pub(crate) fn commands_raw_mut(&mut self) -> &mut CommandStore {
+        &mut self.commands
     }
 
     /// Begin a new stage deferred-command merge scope.

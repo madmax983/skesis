@@ -32,6 +32,40 @@ impl ResourceStore {
             .downcast_mut::<T>()
     }
 
+    /// Get mutable references to two different resources simultaneously.
+    ///
+    /// Returns None if either resource doesn't exist. Panics (debug) if T1 == T2.
+    pub(crate) fn get_two_mut<T1: 'static + Send + Sync, T2: 'static + Send + Sync>(
+        &mut self,
+    ) -> Option<(&mut T1, &mut T2)> {
+        let id1 = TypeId::of::<T1>();
+        let id2 = TypeId::of::<T2>();
+        debug_assert_ne!(id1, id2, "get_two_mut requires distinct types");
+
+        // Find both entries in a single mutable iteration.
+        // We collect raw pointers to the Box values, then downcast.
+        let mut ptr1: Option<*mut (dyn Any + Send + Sync)> = None;
+        let mut ptr2: Option<*mut (dyn Any + Send + Sync)> = None;
+
+        for (tid, boxed) in self.resources.iter_mut() {
+            if *tid == id1 {
+                ptr1 = Some(&mut **boxed as *mut (dyn Any + Send + Sync));
+            } else if *tid == id2 {
+                ptr2 = Some(&mut **boxed as *mut (dyn Any + Send + Sync));
+            }
+            if ptr1.is_some() && ptr2.is_some() {
+                break;
+            }
+        }
+
+        // SAFETY: ptr1 and ptr2 point to different Box heap allocations
+        // (guaranteed by id1 != id2). The raw pointers were derived from
+        // a single iter_mut pass, so no aliasing of the HashMap itself.
+        let r1 = unsafe { ptr1?.cast::<T1>().as_mut()? };
+        let r2 = unsafe { ptr2?.cast::<T2>().as_mut()? };
+        Some((r1, r2))
+    }
+
     /// Check if a resource of the given type exists.
     pub fn has<T: 'static + Send + Sync>(&self) -> bool {
         self.resources.contains_key(&TypeId::of::<T>())
