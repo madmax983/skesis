@@ -48,6 +48,8 @@ mod tuple_query;
 pub mod param;
 /// Raw access to World internals for system parameter extraction.
 pub mod unsafe_cell;
+/// Query types for system parameter extraction.
+pub mod world_query;
 mod world;
 
 pub use app::App;
@@ -67,6 +69,7 @@ pub use sparse_set::SparseSet;
 pub use system::{ParallelSystemFn, SystemAccess, SystemDescriptor, SystemFn};
 pub use param::{Commands, EventReader, EventWriter, Local, Res, ResMut, SystemParam, SystemState};
 pub use unsafe_cell::UnsafeWorldCell;
+pub use world_query::{Query, WorldQuery, query_from_cell};
 pub use tuple_query::QueryTuple;
 pub use world::{
     BorrowedMutQueryPlan, BorrowedPairQueryPlan, ComponentView, ComponentViewMut, MutQueryPlan,
