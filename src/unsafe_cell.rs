@@ -41,7 +41,7 @@ impl<'w> UnsafeWorldCell<'w> {
     ///
     /// The returned cell must not outlive the World reference, and the caller
     /// must ensure non-aliasing access through the cell's methods.
-    pub(crate) unsafe fn new(world: &'w mut World) -> Self {
+    pub unsafe fn new(world: &'w mut World) -> Self {
         Self {
             world: world as *mut World,
             _marker: PhantomData,

@@ -69,6 +69,10 @@ pub use sparse_set::SparseSet;
 pub use system::{ParallelSystemFn, SystemAccess, SystemDescriptor, SystemFn};
 pub use param::{Commands, EventReader, EventWriter, Local, Res, ResMut, SystemParam, SystemState};
 pub use unsafe_cell::UnsafeWorldCell;
+
+// Re-export the #[system] proc macro when the macros feature is enabled
+#[cfg(feature = "macros")]
+pub use skesis_macros::system;
 pub use world_query::{Query, WorldQuery, query_from_cell};
 pub use tuple_query::QueryTuple;
 pub use world::{
