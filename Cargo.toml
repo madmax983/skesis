@@ -21,7 +21,7 @@ rayon = "1"
 skesis-macros = { path = "skesis-macros", optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "micro"
