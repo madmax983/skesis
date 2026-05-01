@@ -42,7 +42,7 @@ jobs:
           git push origin HEAD:trunk
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body: ${{ steps.release-notes.outputs.content }}
           token: ${{ secrets.GITHUB_TOKEN }}
